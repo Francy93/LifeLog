@@ -1,52 +1,56 @@
+// services/recordingService.ts
 import { Platform } from 'react-native';
 import { Audio } from 'expo-av'; // Expo AV for native audio recording
 
-// For Web: using the Web Audio API
-export const startRecordingChunk = async (): Promise<MediaRecorder | Audio.Recording | null> => {
+/**
+ * We'll define a union type to unify web and native recorders.
+ * In your code, you had a "type" in index.tsx, but let's keep it here for clarity.
+ */
+export type UnifiedRecorder = MediaRecorder | Audio.Recording | null;
+
+/**
+ * Starts a recording chunk on web or native.
+ * @returns MediaRecorder (web) or Audio.Recording (native), or null if unsupported.
+ */
+export const startRecordingChunk = async (): Promise<UnifiedRecorder> => {
   try {
+    // WEB
     if (typeof window !== 'undefined' && navigator.mediaDevices) {
       console.log('Web: Attempting to start recording...');
-      
-      // Web Handling using Web Audio API
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       console.log('Web: Microphone access granted');
 
       const mediaRecorder = new MediaRecorder(stream);
-      let chunks: BlobPart[] = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        console.log('Web: Data available from recording');
-        chunks.push(event.data);
-      };
 
       mediaRecorder.start();
-      console.log('Web: Recording started');
-
-      return mediaRecorder; // Return MediaRecorder for web
+      console.log('Web: Recording started (web)');
+      return mediaRecorder;
     }
 
-    // Native Handling using Expo AV
+    // NATIVE
     if (Platform.OS !== 'web') {
       console.log('Native: Attempting to start recording...');
-
       const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
       console.log('Native: Recording started on native device');
-      
-      return recording; // Return Expo Audio recording object for native platforms
+      return recording;
     }
 
-    return null; // Explicitly return null if no conditions match
+    return null;
   } catch (error) {
     console.error('Error starting recording:', error);
-    return null; // Ensure that null is returned in case of error
+    return null;
   }
 };
 
-// For Web: Stop recording and return audio URL
+/**
+ * Stops a recording chunk on web or native and returns the audio URI (or null).
+ * @param recorder MediaRecorder (web) or Audio.Recording (native), or null
+ * @returns string (audio URL/URI) or null
+ */
 export const stopRecordingChunk = async (
-  recorder: MediaRecorder | Audio.Recording | null
+  recorder: UnifiedRecorder
 ): Promise<string | null> => {
   return new Promise((resolve) => {
     if (!recorder) {
@@ -55,13 +59,13 @@ export const stopRecordingChunk = async (
       return;
     }
 
-    // Web Handling (using MediaRecorder)
-    if (typeof window !== 'undefined' && recorder instanceof MediaRecorder) {
+    // WEB
+    if (Platform.OS === 'web' && recorder instanceof MediaRecorder) {
       console.log('Web: Stopping recording...');
-      let chunks: BlobPart[] = [];
+      // We'll accumulate chunks here
+      const chunks: BlobPart[] = [];
 
       recorder.ondataavailable = (event) => {
-        console.log('Web: Data available on stop');
         chunks.push(event.data);
       };
 
@@ -75,21 +79,24 @@ export const stopRecordingChunk = async (
 
       recorder.stop();
     }
-
-    // Native Handling (using Expo AV)
-    if (Platform.OS !== 'web' && recorder instanceof Audio.Recording) {
+    // NATIVE
+    else if (Platform.OS !== 'web' && recorder instanceof Audio.Recording) {
       console.log('Native: Stopping recording...');
-      
-      recorder.stopAndUnloadAsync().then(async () => {
-        const uri = recorder.getURI();
-        console.log('Native: Recording saved with URI:', uri);
-        resolve(uri); // Return URI of recorded file
-      }).catch(error => {
-        console.error('Error stopping native recording:', error);
-        resolve(null); // Ensure null is resolved in case of error
-      });
+      recorder
+        .stopAndUnloadAsync()
+        .then(() => {
+          const uri = recorder.getURI();
+          console.log('Native: Recording saved with URI:', uri);
+          resolve(uri || null);
+        })
+        .catch((error) => {
+          console.error('Error stopping native recording:', error);
+          resolve(null);
+        });
     }
-
-    resolve(null); // Fallback return if neither condition matches
+    // Fallback if no conditions matched
+    else {
+      resolve(null);
+    }
   });
 };

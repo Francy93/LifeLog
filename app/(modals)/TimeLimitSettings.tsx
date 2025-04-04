@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, TextInput, StyleSheet } from 'react-native';
-import { useTimeLimit } from '../hooks/useTimeLimit';
+import { useTimeLimit } from '../../hooks/useTimeLimit';
 
 export default function TimeLimitSettings() {
   const {

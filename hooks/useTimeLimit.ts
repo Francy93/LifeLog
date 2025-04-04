@@ -1,7 +1,7 @@
 // app/hooks/useTimeLimit.ts
 
 import { useEffect, useState } from 'react';
-import { loadTimeLimit, saveTimeLimit } from '../../services/storage';
+import { loadTimeLimit, saveTimeLimit } from '../services/storage';
 
 export function useTimeLimit() {
   const [days, setDays] = useState('0');

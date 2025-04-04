@@ -8,26 +8,32 @@ import {
   StyleSheet,
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform,
+  Platform as RNPlatform,
 } from 'react-native';
-import { Platform as RNPlatform } from 'react-native';
 import { useRouter } from 'expo-router';
+
 import Colors from '../../constants/Colors';
-import { useTimeLimit, useSegments } from '../hooks';
-import { startRecordingChunk, stopRecordingChunk } from '../../services/recordingService';
-import { transcribeAudio } from '../../services/transcriptionService';
+import { useTimeLimit, useSegments } from '../../hooks';
+import {
+  startRecordingChunk,
+  stopRecordingChunk,
+  UnifiedRecorder,
+} from '../../services/recordingService';
 import { enforceTimeLimit } from '../../services/timeManager';
-import { cleanupOldSegmentsIfLowStorage } from '../../services/storageService';
+import { cleanupOldSegmentsIfLowStorage, saveSegments,} from '../../services/storageService';
 
 export default function MainPage() {
   const router = useRouter();
-  const recordingIntervalRef = useRef<any>(null);
-
+  // We'll store the ref that always points to the *current* active recorder
+  const currentRecorderRef = useRef<UnifiedRecorder>(null);
+  // We'll also keep track if we're “recording” from a UI perspective
   const [recording, setRecording] = useState(false);
   const [loading, setLoading] = useState(false);
+
   const [searchQuery, setSearchQuery] = useState('');
-  const [audioRecording, setAudioRecording] = useState<any>(null);
   const [filteredSegments, setFilteredSegments] = useState<typeof segments>([]);
+
+  const recordingIntervalRef = useRef<any>(null);
 
   const { days, hours, minutes, setDays, setHours, setMinutes } = useTimeLimit();
   const { segments, setSegments, addSegment } = useSegments();
@@ -35,61 +41,109 @@ export default function MainPage() {
   useEffect(() => {
     if (searchQuery.trim() === '') {
       setFilteredSegments([]);
-    } else {
-      const filtered = segments.filter(s =>
-        s.transcription.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-      setFilteredSegments(filtered);
+      return;
     }
+    const filtered = segments.filter((s) =>
+      s.transcription.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    setFilteredSegments(filtered);
   }, [searchQuery, segments]);
 
+  /**
+   * Start the continuous recording process
+   *  - Immediately start first recording
+   *  - Start setInterval for chunk rotation every 30s
+   */
   const startContinuousRecording = async () => {
     setRecording(true);
-    await startChunk();
 
+    // Start the first recorder
+    const firstRecorder = await startRecordingChunk();
+    currentRecorderRef.current = firstRecorder;
+
+    // Set the interval for chunk rotation
     recordingIntervalRef.current = setInterval(async () => {
-      await stopChunk();
-      await startChunk();
-
-      const updated = enforceTimeLimit(segments, days, hours, minutes);
-      setSegments(updated);
-    }, 30000); // every 30 seconds
+      try {
+        const newRecorder = await startRecordingChunk();
+        const oldRecorder = currentRecorderRef.current;
+        currentRecorderRef.current = newRecorder;
+    
+        if (oldRecorder) {
+          const audioUri = await stopRecordingChunk(oldRecorder);
+          if (!audioUri) {
+            console.warn('[Chunk Finalize] No audio URI to save.');
+            return;
+          }
+    
+          const timestamp = Date.now();
+          const newSegment = {
+            id: String(timestamp),
+            timestamp,
+            transcription: 'Simulated transcription',
+            audioUri,
+          };
+    
+          // Safely add the new segment and enforce time limit
+          setSegments((prevSegments) => {
+            const appended = [...prevSegments, newSegment].sort((a, b) => a.timestamp - b.timestamp);
+            const limited = enforceTimeLimit(appended, days, hours, minutes);
+            saveSegments(limited);
+            console.log(`[Segment Save] Total stored: ${limited.length}`);
+            return limited;
+          });
+        }
+      } catch (err) {
+        console.error('[Recording Interval Error]', err);
+      }
+    }, 30000);
+    
   };
 
-  const startChunk = async () => {
-    const recording = await startRecordingChunk();
-    if (recording) setAudioRecording(recording);
-  };
-
-  const stopChunk = async () => {
-    if (!audioRecording || RNPlatform.OS === 'web') return;
-
-    const audioUri = await stopRecordingChunk(audioRecording);
-    if (!audioUri) return;
-
-    const timestamp = Date.now();
-    const transcription = await transcribeAudio(audioUri);
-
-    const segment = {
-      id: String(timestamp),
-      timestamp,
-      transcription,
-      audioUri,
-    };
-
-    await addSegment(segment);
-    await cleanupOldSegmentsIfLowStorage(100); // MB threshold
-    setAudioRecording(null);
-  };
-
+  /**
+   * Stop the continuous recording process
+   *  - Clear the interval
+   *  - Finalize the last active recorder
+   */
   const stopContinuousRecording = async () => {
     setRecording(false);
-    if (recordingIntervalRef.current) clearInterval(recordingIntervalRef.current);
-    await stopChunk();
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+    }
+    const lastRecorder = currentRecorderRef.current;
+    if (lastRecorder) {
+      await finalizeChunk(lastRecorder);
+      currentRecorderRef.current = null;
+    }
+  };
+
+  /**
+   * finalizeChunk
+   *  - Stop the provided recorder
+   *  - Create a new segment
+   *  - Save it to local/AsyncStorage
+   */
+  const finalizeChunk = async (recorder: UnifiedRecorder) => {
+    const audioUri = await stopRecordingChunk(recorder);
+    if (!audioUri) {
+      console.log('No audio URI. Possibly an error or no data recorded.');
+      return;
+    }
+    const timestamp = Date.now();
+    const newSegment = {
+      id: String(timestamp),
+      timestamp,
+      transcription: 'Simulated transcription', // or real transcription
+      audioUri,
+    };
+    await addSegment(newSegment);
+    await cleanupOldSegmentsIfLowStorage(100);
   };
 
   return (
-    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={RNPlatform.OS === 'ios' ? 'padding' : undefined}
+    >
       <View style={styles.container}>
         <TextInput
           style={styles.searchBar}
@@ -143,10 +197,7 @@ export default function MainPage() {
                 onPress={() =>
                   router.push({
                     pathname: '/ConversationDetail',
-                    params: {
-                      transcription: item.transcription,
-                      audioUri: item.audioUri,
-                    },
+                    params: { transcription: item.transcription, audioUri: item.audioUri },
                   })
                 }
               >

@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity } from 'react-native';
-import { useRouter } from 'expo-router';
+import React, { useState, useCallback } from 'react';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, DeviceEventEmitter } from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface Segment {
@@ -14,21 +14,42 @@ export default function Timeline() {
   const [segments, setSegments] = useState<Segment[]>([]);
   const router = useRouter();
 
-  useEffect(() => {
-    const loadSegments = async () => {
-      try {
-        const stored = await AsyncStorage.getItem('segments');
-        if (stored) {
-          const parsed: Segment[] = JSON.parse(stored);
-          // Sort chronologically (latest first)
-          setSegments(parsed.sort((a, b) => b.timestamp - a.timestamp));
-        }
-      } catch (error) {
-        console.error('Errore nel caricamento dei segmenti:', error);
+  const loadSegments = async () => {
+    try {
+      console.log('[Timeline] loadSegments called...');
+      const stored = await AsyncStorage.getItem('segments');
+      if (stored) {
+        const parsed: Segment[] = JSON.parse(stored);
+        // Sort chronologically (latest first)
+        setSegments(parsed.sort((a, b) => b.timestamp - a.timestamp));
+      } else {
+        setSegments([]);
       }
-    };
-    loadSegments();
-  }, []);
+    } catch (error) {
+      console.error('[Timeline] Error loading segments:', error);
+    }
+  };
+
+  // Re-fetch segments each time Timeline is in the foreground,
+  // and whenever we get a 'segmentsUpdated' event from storageService
+  useFocusEffect(
+    useCallback(() => {
+      console.log('[Timeline] Screen focused, reloading segments...');
+      loadSegments();
+
+      // Subscribe to "segmentsUpdated" event
+      const subscription = DeviceEventEmitter.addListener('segmentsUpdated', () => {
+        console.log('[Timeline] "segmentsUpdated" event received, reloading segments...');
+        loadSegments();
+      });
+
+      return () => {
+        // Unsubscribe on blur
+        console.log('[Timeline] Screen unfocused, removing subscription');
+        subscription.remove();
+      };
+    }, [])
+  );
 
   return (
     <View style={styles.container}>
@@ -52,13 +73,11 @@ export default function Timeline() {
               }
             >
               <Text style={styles.timestamp}>
-                {new Date(item.timestamp).toLocaleDateString()} {'\n'}
+                {new Date(item.timestamp).toLocaleDateString()}{' '}
                 {new Date(item.timestamp).toLocaleTimeString()}
               </Text>
               <Text style={styles.preview}>
-                {item.transcription.length > 0
-                  ? item.transcription.slice(0, 80) + '...'
-                  : '⏳ In attesa di trascrizione'}
+                {item.transcription.slice(0, 80)}...
               </Text>
             </TouchableOpacity>
           )}
