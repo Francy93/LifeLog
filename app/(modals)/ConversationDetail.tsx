@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  Platform,
 } from 'react-native';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { useLocalSearchParams } from 'expo-router';
@@ -13,15 +14,15 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
 export default function ConversationDetail() {
-  const { transcription, audioUri } = useLocalSearchParams<{
+  const { transcription, audioUri, audioBase64 } = useLocalSearchParams<{
     transcription: string;
     audioUri: string;
+    audioBase64?: string;
   }>();
 
   const [sound, setSound] = useState<Audio.Sound | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
 
-  // ✅ Prevent this screen from interrupting recording
   useEffect(() => {
     (async () => {
       try {
@@ -50,11 +51,32 @@ export default function ConversationDetail() {
     }
 
     try {
-      const { sound: newSound } = await Audio.Sound.createAsync({ uri: audioUri });
+      let uriToPlay = audioUri;
+
+      // If we're on web and blob URI is likely broken, try to recreate it from base64
+      if (Platform.OS === 'web' && audioUri?.startsWith('blob:')) {
+        console.log('[Web Playback] Attempting to restore from Base64');
+        if (audioBase64) {
+          const binary = atob(audioBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+
+          const blob = new Blob([bytes], { type: 'audio/webm' });
+          uriToPlay = URL.createObjectURL(blob);
+          console.log('[Web Playback] Blob URI recreated from base64');
+        } else {
+          throw new Error('Audio URL expired and no base64 data found.');
+        }
+      }
+
+      const { sound: newSound } = await Audio.Sound.createAsync({ uri: uriToPlay });
       setSound(newSound);
       setIsPlaying(true);
       await newSound.playAsync();
     } catch (error) {
+      console.error('[Playback Error]', error);
       Alert.alert('Errore nella riproduzione audio', String(error));
     }
   }
@@ -71,12 +93,10 @@ export default function ConversationDetail() {
 
   return (
     <View style={styles.container}>
-      {/* 📝 Trascrizione Scrollabile */}
       <ScrollView style={styles.transcriptionContainer}>
         <Text style={styles.transcription}>{transcription}</Text>
       </ScrollView>
 
-      {/* 🔄 Carica altro (placeholder) */}
       <TouchableOpacity
         style={styles.loadMoreButton}
         onPress={() => Alert.alert('Carica altro...', 'Funzionalità in arrivo')}
@@ -84,7 +104,6 @@ export default function ConversationDetail() {
         <Text style={styles.loadMoreText}>⬇️ Carica altro...</Text>
       </TouchableOpacity>
 
-      {/* 🎵 Audio Player + Export */}
       <View style={styles.audioPlayer}>
         <TouchableOpacity onPress={playAudio} style={styles.playButton}>
           <Text style={styles.playButtonText}>

@@ -8,6 +8,7 @@ export interface Segment {
   timestamp: number;
   transcription: string;
   audioUri: string;
+  audioBase64?: string; // ✅ Added for persistent audio on web
 }
 
 const STORAGE_KEY = 'segments';

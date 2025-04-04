@@ -8,7 +8,9 @@ export interface Segment {
   timestamp: number;
   transcription: string;
   audioUri: string;
+  audioBase64?: string; // ✅ Added for persistent audio on web
 }
+
 
 export function useSegments() {
   const [segments, setSegments] = useState<Segment[]>([]);

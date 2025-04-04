@@ -1,17 +1,10 @@
 // services/recordingService.ts
 import { Platform } from 'react-native';
-import { Audio } from 'expo-av'; // Expo AV for native audio recording
+import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
 
-/**
- * We'll define a union type to unify web and native recorders.
- * In your code, you had a "type" in index.tsx, but let's keep it here for clarity.
- */
 export type UnifiedRecorder = MediaRecorder | Audio.Recording | null;
 
-/**
- * Starts a recording chunk on web or native.
- * @returns MediaRecorder (web) or Audio.Recording (native), or null if unsupported.
- */
 export const startRecordingChunk = async (): Promise<UnifiedRecorder> => {
   try {
     // WEB
@@ -21,7 +14,6 @@ export const startRecordingChunk = async (): Promise<UnifiedRecorder> => {
       console.log('Web: Microphone access granted');
 
       const mediaRecorder = new MediaRecorder(stream);
-
       mediaRecorder.start();
       console.log('Web: Recording started (web)');
       return mediaRecorder;
@@ -29,11 +21,18 @@ export const startRecordingChunk = async (): Promise<UnifiedRecorder> => {
 
     // NATIVE
     if (Platform.OS !== 'web') {
-      console.log('Native: Attempting to start recording...');
+      console.log('Native: Requesting microphone permission...');
+      const { granted } = await Audio.requestPermissionsAsync();
+      if (!granted) {
+        console.error('Microphone permission not granted');
+        throw new Error('Missing audio recording permissions.');
+      }
+
+      console.log('Native: Permission granted. Starting recording...');
       const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
-      console.log('Native: Recording started on native device');
+      console.log('Native: Recording started');
       return recording;
     }
 
@@ -45,13 +44,12 @@ export const startRecordingChunk = async (): Promise<UnifiedRecorder> => {
 };
 
 /**
- * Stops a recording chunk on web or native and returns the audio URI (or null).
- * @param recorder MediaRecorder (web) or Audio.Recording (native), or null
- * @returns string (audio URL/URI) or null
+ * On web: returns blob URI and base64.
+ * On native: returns file:// URI only.
  */
 export const stopRecordingChunk = async (
   recorder: UnifiedRecorder
-): Promise<string | null> => {
+): Promise<{ uri: string; base64?: string } | null> => {
   return new Promise((resolve) => {
     if (!recorder) {
       console.error('No active recording.');
@@ -62,39 +60,70 @@ export const stopRecordingChunk = async (
     // WEB
     if (Platform.OS === 'web' && recorder instanceof MediaRecorder) {
       console.log('Web: Stopping recording...');
-      // We'll accumulate chunks here
       const chunks: BlobPart[] = [];
 
       recorder.ondataavailable = (event) => {
         chunks.push(event.data);
       };
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         console.log('Web: Recording stopped');
         const audioBlob = new Blob(chunks, { type: 'audio/webm' });
-        const audioUrl = URL.createObjectURL(audioBlob);
-        console.log('Web: Recording saved:', audioUrl);
-        resolve(audioUrl);
+        const blobUrl = URL.createObjectURL(audioBlob);
+
+        // Convert Blob to Base64
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = (reader.result as string).split(',')[1];
+          console.log('[Web] Blob saved as Base64, URI:', blobUrl);
+          resolve({ uri: blobUrl, base64 });
+        };
+        reader.onerror = (err) => {
+          console.error('[Web] Error converting blob to base64:', err);
+          resolve({ uri: blobUrl });
+        };
+
+        reader.readAsDataURL(audioBlob);
       };
 
       recorder.stop();
     }
+
     // NATIVE
     else if (Platform.OS !== 'web' && recorder instanceof Audio.Recording) {
       console.log('Native: Stopping recording...');
       recorder
         .stopAndUnloadAsync()
-        .then(() => {
-          const uri = recorder.getURI();
-          console.log('Native: Recording saved with URI:', uri);
-          resolve(uri || null);
+        .then(async () => {
+          const originalUri = recorder.getURI();
+          if (!originalUri) {
+            console.error('Native: Failed to get recording URI');
+            resolve(null);
+            return;
+          }
+
+          const filename = `audio_${Date.now()}.m4a`;
+          const newPath = FileSystem.documentDirectory + filename;
+
+          try {
+            await FileSystem.moveAsync({
+              from: originalUri,
+              to: newPath,
+            });
+            console.log('Native: File moved to:', newPath);
+            resolve({ uri: newPath });
+          } catch (moveError) {
+            console.error('Native: Failed to move file:', moveError);
+            resolve({ uri: originalUri });
+          }
         })
         .catch((error) => {
           console.error('Error stopping native recording:', error);
           resolve(null);
         });
     }
-    // Fallback if no conditions matched
+
+    // Unknown platform
     else {
       resolve(null);
     }

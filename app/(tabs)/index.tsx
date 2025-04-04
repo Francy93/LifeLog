@@ -23,31 +23,19 @@ import {
 import { enforceTimeLimit } from '../../services/timeManager';
 import { cleanupOldSegmentsIfLowStorage, saveSegments } from '../../services/storageService';
 
-
 export default function MainPage() {
   const router = useRouter();
 
-  // 🧠 Ref to store the currently active recorder (rotated every 30s)
   const currentRecorderRef = useRef<UnifiedRecorder>(null);
-
-  // 🧠 Ref used to block further chunk rotation after recording is stopped
   const shouldRecordRef = useRef<boolean>(true);
-
-  // 📶 Tracks the current interval between chunks
   const recordingIntervalRef = useRef<any>(null);
 
-  // 🔄 UI State
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredSegments, setFilteredSegments] = useState<typeof segments>([]);
 
-  // ⏳ Time limit management
   const { days, hours, minutes, setDays, setHours, setMinutes } = useTimeLimit();
-
-  // 📼 Global recording state & segment management from context
   const { segments, setSegments, addSegment, recording, setRecording } = useSegmentContext();
-
-
 
   useEffect(() => {
     if (searchQuery.trim() === '') {
@@ -60,55 +48,49 @@ export default function MainPage() {
     setFilteredSegments(filtered);
   }, [searchQuery, segments]);
 
-  /**
-   * Start the continuous recording process
-   *  - Immediately start first recording
-   *  - Start setInterval for chunk rotation every 30s
-   */
   const startContinuousRecording = async () => {
     console.log('[Recording] startContinuousRecording called');
 
     shouldRecordRef.current = true;
-  
+
     if (recordingIntervalRef.current) {
       console.warn('[Recording] Duplicate interval detected. Clearing existing interval.');
       clearInterval(recordingIntervalRef.current);
     }
-  
-    shouldRecordRef.current = true;
+
     setRecording(true);
-  
+
     const firstRecorder = await startRecordingChunk();
     currentRecorderRef.current = firstRecorder;
-  
+
     recordingIntervalRef.current = setInterval(async () => {
       if (!shouldRecordRef.current) {
         console.warn('[Interval Tick] Skipped — recording has been stopped.');
         return;
       }
-  
+
       console.log('[Interval Tick] 30s chunk rotation triggered');
-  
+
       try {
-        const newRecorder = await startRecordingChunk();
         const oldRecorder = currentRecorderRef.current;
-        currentRecorderRef.current = newRecorder;
-  
+
         if (oldRecorder) {
-          const audioUri = await stopRecordingChunk(oldRecorder);
-          if (!audioUri) {
-            console.warn('[Chunk Finalize] No audio URI to save.');
+          const result = await stopRecordingChunk(oldRecorder);
+          if (!result) {
+            console.warn('[Chunk Finalize] No audio result to save.');
             return;
           }
-  
+          const { uri: audioUri, base64: audioBase64 } = result;
+
           const timestamp = Date.now();
           const newSegment = {
             id: String(timestamp),
             timestamp,
             transcription: 'Simulated transcription',
             audioUri,
+            audioBase64,
           };
-  
+
           setSegments((prevSegments) => {
             const appended = [...prevSegments, newSegment].sort((a, b) => a.timestamp - b.timestamp);
             const limited = enforceTimeLimit(appended, days, hours, minutes);
@@ -117,38 +99,31 @@ export default function MainPage() {
             return limited;
           });
         }
+
+        const newRecorder = await startRecordingChunk();
+        currentRecorderRef.current = newRecorder;
+
       } catch (err) {
         console.error('[Recording Interval Error]', err);
       }
     }, 30000);
-  
+
     console.log('[Recording] Interval started');
   };
-  
 
-  /**
-   * Stop the continuous recording process
-   *  - Clear the interval
-   *  - Finalize the last active recorder
-   */
   const stopContinuousRecording = async () => {
     console.log('[DEBUG] stopContinuousRecording() called');
     console.log('[Stop] Attempting to stop recording...');
-  
-    // ⛔️ Block further chunk rotation
+
     shouldRecordRef.current = false;
-  
-    // 🔕 Update visual UI state
     setRecording(false);
-  
-    // 🧹 Clear the active interval if it's still running
+
     if (recordingIntervalRef.current) {
       clearInterval(recordingIntervalRef.current);
       recordingIntervalRef.current = null;
       console.log('[Stop] Cleared recording interval.');
     }
-  
-    // 📼 Finalize last active recorder
+
     const lastRecorder = currentRecorderRef.current;
     if (lastRecorder) {
       await finalizeChunk(lastRecorder);
@@ -158,26 +133,22 @@ export default function MainPage() {
       console.log('[Stop] No active recorder to finalize.');
     }
   };
-  
 
-  /**
-   * finalizeChunk
-   *  - Stop the provided recorder
-   *  - Create a new segment
-   *  - Save it to local/AsyncStorage
-   */
   const finalizeChunk = async (recorder: UnifiedRecorder) => {
-    const audioUri = await stopRecordingChunk(recorder);
-    if (!audioUri) {
-      console.log('No audio URI. Possibly an error or no data recorded.');
+    const result = await stopRecordingChunk(recorder);
+    if (!result) {
+      console.log('No audio result. Possibly an error or no data recorded.');
       return;
     }
+
+    const { uri: audioUri, base64: audioBase64 } = result;
     const timestamp = Date.now();
     const newSegment = {
       id: String(timestamp),
       timestamp,
-      transcription: 'Simulated transcription', // or real transcription
+      transcription: 'Simulated transcription',
       audioUri,
+      audioBase64,
     };
     await addSegment(newSegment);
     await cleanupOldSegmentsIfLowStorage(100);
@@ -241,7 +212,11 @@ export default function MainPage() {
                 onPress={() =>
                   router.push({
                     pathname: '/ConversationDetail',
-                    params: { transcription: item.transcription, audioUri: item.audioUri },
+                    params: {
+                      transcription: item.transcription,
+                      audioUri: item.audioUri,
+                      audioBase64: item.audioBase64 ?? '',
+                    },
                   })
                 }
               >
