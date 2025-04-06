@@ -132,13 +132,30 @@ export default function AudioPlayer({ audioUri, audioBase64, timestampStart, dur
     if (soundRef.current) await soundRef.current.setRateAsync(newSpeed, true);
   };
 
-  const downloadAudio = async () => {
+  async function downloadAudio() {
     try {
-      await Sharing.shareAsync(audioUri);
+      if (Platform.OS === 'web') {
+        if (!audioBase64) throw new Error('Base64 not available for download');
+        const blob = new Blob([
+          Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0))
+        ], { type: 'audio/wav' });
+  
+        const a = Object.assign(document.createElement('a'), {
+          href: URL.createObjectURL(blob),
+          download: 'audio.wav',
+        });
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+      } else {
+        await Sharing.shareAsync(audioUri);
+      }
     } catch (error) {
       Alert.alert('Errore durante il download', String(error));
     }
-  };
+  }
+
 
   const handleSeek = (event: GestureResponderEvent) => {
     if (!soundRef.current || !isReady || !visualizerRef.current || !isFinite(durationMillis)) return;
