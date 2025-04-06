@@ -29,6 +29,7 @@ export default function MainPage() {
   const currentRecorderRef = useRef<UnifiedRecorder>(null);
   const shouldRecordRef = useRef<boolean>(true);
   const recordingIntervalRef = useRef<any>(null);
+  const recordingStartRef = useRef<number>(Date.now());
 
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -60,6 +61,7 @@ export default function MainPage() {
 
     setRecording(true);
 
+    recordingStartRef.current = Date.now();
     const firstRecorder = await startRecordingChunk();
     currentRecorderRef.current = firstRecorder;
 
@@ -75,24 +77,27 @@ export default function MainPage() {
         const oldRecorder = currentRecorderRef.current;
 
         if (oldRecorder) {
+          const timestampEnd = Date.now();
+          const timestampStart = recordingStartRef.current;
           const result = await stopRecordingChunk(oldRecorder);
           if (!result) {
             console.warn('[Chunk Finalize] No audio result to save.');
             return;
           }
-          const { uri: audioUri, base64: audioBase64 } = result;
+          const { uri: audioUri, base64 } = result;
 
-          const timestamp = Date.now();
           const newSegment = {
-            id: String(timestamp),
-            timestamp,
+            id: String(timestampEnd),
+            timestampStart,
+            timestampEnd,
+            durationMillis: timestampEnd - timestampStart,
             transcription: 'Simulated transcription',
             audioUri,
-            audioBase64,
+            audioBase64: base64 ?? '',
           };
 
           setSegments((prevSegments) => {
-            const appended = [...prevSegments, newSegment].sort((a, b) => a.timestamp - b.timestamp);
+            const appended = [...prevSegments, newSegment].sort((a, b) => a.timestampEnd - b.timestampEnd);
             const limited = enforceTimeLimit(appended, days, hours, minutes);
             saveSegments(limited);
             console.log(`[Segment Save] Total stored: ${limited.length}`);
@@ -100,6 +105,7 @@ export default function MainPage() {
           });
         }
 
+        recordingStartRef.current = Date.now();
         const newRecorder = await startRecordingChunk();
         currentRecorderRef.current = newRecorder;
 
@@ -135,20 +141,23 @@ export default function MainPage() {
   };
 
   const finalizeChunk = async (recorder: UnifiedRecorder) => {
+    const timestampEnd = Date.now();
     const result = await stopRecordingChunk(recorder);
     if (!result) {
       console.log('No audio result. Possibly an error or no data recorded.');
       return;
     }
 
-    const { uri: audioUri, base64: audioBase64 } = result;
-    const timestamp = Date.now();
+    const { uri: audioUri, base64 } = result;
+    const timestampStart = timestampEnd - 30000; // Default chunk duration
     const newSegment = {
-      id: String(timestamp),
-      timestamp,
+      id: String(timestampEnd),
+      timestampStart,
+      timestampEnd,
+      durationMillis: timestampEnd - timestampStart,
       transcription: 'Simulated transcription',
       audioUri,
-      audioBase64,
+      audioBase64: base64 ?? '',
     };
     await addSegment(newSegment);
     await cleanupOldSegmentsIfLowStorage(100);
@@ -216,13 +225,16 @@ export default function MainPage() {
                       transcription: item.transcription,
                       audioUri: item.audioUri,
                       audioBase64: item.audioBase64 ?? '',
+                      timestampStart: item.timestampStart?.toString(),
+                      timestampEnd: item.timestampEnd?.toString(),
+                      durationMillis: item.durationMillis?.toString(),
                     },
                   })
                 }
               >
                 <View style={styles.segmentItem}>
                   <Text style={styles.segmentTime}>
-                    {new Date(item.timestamp).toLocaleTimeString()}
+                    {new Date(item.timestampEnd).toLocaleTimeString()}
                   </Text>
                   <Text style={styles.segmentPreview}>
                     {item.transcription.slice(0, 50)}...

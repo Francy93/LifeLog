@@ -5,10 +5,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export interface Segment {
   id: string;
-  timestamp: number;
-  transcription: string;
-  audioUri: string;
-  audioBase64?: string; // ✅ Added for persistent audio on web
+  timestampStart:   number; // ✅ Added for duration calculation
+  timestampEnd:     number; // ✅ Added for timeline display
+  durationMillis:   number; // ✅ Added for duration calculation
+  transcription:    string; // ✅ Added for persistent transcription on native
+  audioUri:         string; // ✅ Added for persistent audio on native
+  audioBase64:      string; // ✅ Added for persistent audio on web
 }
 
 const STORAGE_KEY = 'segments';
@@ -46,7 +48,7 @@ export async function cleanupOldSegmentsIfLowStorage(thresholdInMB: number = 100
     if (!raw) return;
 
     const segments = JSON.parse(raw) as Segment[];
-    const sorted = [...segments].sort((a, b) => a.timestamp - b.timestamp); // oldest first
+    const sorted = [...segments].sort((a, b) => a.timestampEnd - b.timestampEnd); // oldest first
 
     for (let i = 0; i < sorted.length; i++) {
       try {

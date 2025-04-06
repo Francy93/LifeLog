@@ -5,10 +5,12 @@ import { loadSegments, saveSegments } from '../services/storageService';
 
 export interface Segment {
   id: string;
-  timestamp: number;
-  transcription: string;
-  audioUri: string;
-  audioBase64?: string; // ✅ Added for persistent audio on web
+  timestampStart:   number; // ✅ Added for duration calculation
+  timestampEnd:     number; // ✅ Added for timeline display
+  durationMillis:   number; // ✅ Added for duration calculation
+  transcription:    string; // ✅ Added for persistent transcription on native
+  audioUri:         string; // ✅ Added for persistent audio on native
+  audioBase64:      string; // ✅ Added for persistent audio on web
 }
 
 
@@ -28,7 +30,7 @@ export function useSegments() {
   const addSegment = (newSegment: Segment) => {
     setSegments((prevSegments) => {
       const updated = [...prevSegments, newSegment].sort(
-        (a, b) => a.timestamp - b.timestamp
+        (a, b) => a.timestampEnd - b.timestampEnd
       );
       saveSegments(updated);
       return updated;

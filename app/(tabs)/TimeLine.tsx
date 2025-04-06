@@ -16,10 +16,12 @@ import { Ionicons } from '@expo/vector-icons';
 
 interface Segment {
   id: string;
-  timestamp: number;
+  timestampStart: number;
+  timestampEnd: number;
+  durationMillis: number;
   transcription: string;
   audioUri: string;
-  audioBase64?: string;
+  audioBase64: string;
 }
 
 export default function Timeline() {
@@ -34,7 +36,7 @@ export default function Timeline() {
       const stored = await AsyncStorage.getItem('segments');
       if (stored) {
         const parsed: Segment[] = JSON.parse(stored);
-        setSegments(parsed.sort((a, b) => b.timestamp - a.timestamp));
+        setSegments(parsed.sort((a, b) => b.timestampEnd - a.timestampEnd));
       } else {
         setSegments([]);
       }
@@ -102,17 +104,18 @@ export default function Timeline() {
               transcription: item.transcription,
               audioUri: item.audioUri,
               audioBase64: item.audioBase64 ?? '',
+              timestampStart: item.timestampStart?.toString(),
+              timestampEnd: item.timestampEnd?.toString(),
+              durationMillis: item.durationMillis?.toString(),
             },
           })
         }
       >
         <Text style={styles.timestamp}>
-          {new Date(item.timestamp).toLocaleDateString()}{' '}
-          {new Date(item.timestamp).toLocaleTimeString()}
+          {new Date(item.timestampEnd).toLocaleDateString()}{' '}
+          {new Date(item.timestampEnd).toLocaleTimeString()} ({Math.round(item.durationMillis / 1000)}s)
         </Text>
-        <Text style={styles.preview}>
-          {item.transcription.slice(0, 80)}...
-        </Text>
+        <Text style={styles.preview}>{item.transcription.slice(0, 80)}...</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
@@ -137,7 +140,6 @@ export default function Timeline() {
         />
       )}
 
-      {/* 🧼 Deletion confirmation modal */}
       <Modal
         animationType="fade"
         transparent
