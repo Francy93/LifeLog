@@ -2,84 +2,71 @@
 import { Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
+import { transcribeAudioOffline, transcribeWithGoogleAPI } from './transcriptionService';
 
 export type UnifiedRecorder = MediaRecorder | Audio.Recording | null;
 
 export const startRecordingChunk = async (): Promise<UnifiedRecorder> => {
   try {
-    // WEB
     if (typeof window !== 'undefined' && navigator.mediaDevices) {
-      console.log('Web: Attempting to start recording...');
+      console.log('[startRecordingChunk] Web platform detected');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      console.log('Web: Microphone access granted');
-
-      const mediaRecorder = new MediaRecorder(stream);
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus',
+        audioBitsPerSecond: 64000
+      });
       mediaRecorder.start();
-      console.log('Web: Recording started (web)');
+      console.log('[startRecordingChunk] Web recorder started');
       return mediaRecorder;
     }
 
-    // NATIVE
     if (Platform.OS !== 'web') {
-      console.log('Native: Requesting microphone permission...');
       const { granted } = await Audio.requestPermissionsAsync();
-      if (!granted) {
-        console.error('Microphone permission not granted');
-        throw new Error('Missing audio recording permissions.');
-      }
+      if (!granted) throw new Error('Missing audio recording permissions.');
 
-      console.log('Native: Permission granted. Starting recording...');
       const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
-      console.log('Native: Recording started');
+      console.log('[startRecordingChunk] Native recorder started');
       return recording;
     }
 
     return null;
   } catch (error) {
-    console.error('Error starting recording:', error);
+    console.error('[startRecordingChunk] Error starting recording:', error);
     return null;
   }
 };
 
-/**
- * On web: returns blob URI and base64.
- * On native: returns file:// URI only.
- */
 export const stopRecordingChunk = async (
   recorder: UnifiedRecorder
 ): Promise<{ uri: string; base64?: string } | null> => {
   return new Promise((resolve) => {
     if (!recorder) {
-      console.error('No active recording.');
+      console.warn('[stopRecordingChunk] No active recorder');
       resolve(null);
       return;
     }
 
-    // WEB
     if (Platform.OS === 'web' && recorder instanceof MediaRecorder) {
-      console.log('Web: Stopping recording...');
+      console.log('[stopRecordingChunk] Stopping web recorder');
       const chunks: BlobPart[] = [];
 
-      recorder.ondataavailable = (event) => {
-        chunks.push(event.data);
-      };
+      recorder.ondataavailable = (event) => chunks.push(event.data);
 
       recorder.onstop = async () => {
-        console.log('Web: Recording stopped');
-        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        console.log('[stopRecordingChunk] Web recording stopped');
+        const audioBlob = new Blob(chunks, { type: 'audio/webm;codecs=opus' });
         const blobUrl = URL.createObjectURL(audioBlob);
 
-        // Convert Blob to Base64
         const reader = new FileReader();
         reader.onloadend = () => {
           const base64 = (reader.result as string).split(',')[1];
-          console.log('[Web] Blob saved as Base64, URI:', blobUrl);
+          console.log('[stopRecordingChunk] Web audio converted to base64, length:', base64.length);
           resolve({ uri: blobUrl, base64 });
         };
         reader.onerror = (err) => {
-          console.error('[Web] Error converting blob to base64:', err);
+          console.error('[stopRecordingChunk] Base64 conversion error:', err);
           resolve({ uri: blobUrl });
         };
 
@@ -87,17 +74,14 @@ export const stopRecordingChunk = async (
       };
 
       recorder.stop();
-    }
-
-    // NATIVE
-    else if (Platform.OS !== 'web' && recorder instanceof Audio.Recording) {
-      console.log('Native: Stopping recording...');
+    } else if (Platform.OS !== 'web' && recorder instanceof Audio.Recording) {
+      console.log('[stopRecordingChunk] Stopping native recorder');
       recorder
         .stopAndUnloadAsync()
         .then(async () => {
           const originalUri = recorder.getURI();
           if (!originalUri) {
-            console.error('Native: Failed to get recording URI');
+            console.error('[stopRecordingChunk] Native URI not found');
             resolve(null);
             return;
           }
@@ -106,26 +90,69 @@ export const stopRecordingChunk = async (
           const newPath = FileSystem.documentDirectory + filename;
 
           try {
-            await FileSystem.moveAsync({
-              from: originalUri,
-              to: newPath,
-            });
-            console.log('Native: File moved to:', newPath);
+            await FileSystem.moveAsync({ from: originalUri, to: newPath });
+            console.log('[stopRecordingChunk] Native audio moved to:', newPath);
             resolve({ uri: newPath });
           } catch (moveError) {
-            console.error('Native: Failed to move file:', moveError);
+            console.error('[stopRecordingChunk] Move error:', moveError);
             resolve({ uri: originalUri });
           }
         })
-        .catch((error) => {
-          console.error('Error stopping native recording:', error);
+        .catch((err) => {
+          console.error('[stopRecordingChunk] Unload error:', err);
           resolve(null);
         });
-    }
-
-    // Unknown platform
-    else {
+    } else {
+      console.warn('[stopRecordingChunk] Unknown platform or recorder');
       resolve(null);
     }
   });
+};
+
+export const processAndSaveSegment = async (
+  audioUri: string,
+  timestamp: number,
+  base64: string = ''
+) => {
+  console.log('[processAndSaveSegment] Started for timestamp:', timestamp);
+  let transcription;
+
+  try {
+    if (Platform.OS === 'web') {
+      transcription = await transcribeWithGoogleAPI(base64);
+    } else {
+      transcription = await transcribeAudioOffline();
+    }
+    console.log('[processAndSaveSegment] Transcription received:', transcription?.text);
+  } catch (err) {
+    console.error('[processAndSaveSegment] Transcription error:', err);
+    return;
+  }
+
+  if (!transcription || !transcription.text.trim()) {
+    console.warn('[processAndSaveSegment] Skipping segment due to empty transcription');
+    try {
+      await FileSystem.deleteAsync(audioUri, { idempotent: true });
+      console.log('[processAndSaveSegment] Deleted empty audio segment');
+    } catch (delErr) {
+      console.error('[processAndSaveSegment] Failed to delete empty audio:', delErr);
+    }
+    return;
+  }
+
+  const fullTranscript = transcription.text;
+
+  const segment = {
+    id: Date.now().toString(),
+    timestampStart: timestamp,
+    timestampEnd: timestamp + 30 * 1000,
+    durationMillis: 30 * 1000,
+    transcription: fullTranscript,
+    audioUri: audioUri,
+    audioBase64: base64,
+    words: transcription.words ?? [],
+  };
+
+  console.log('[processAndSaveSegment] Segment ready:', segment);
+  return segment;
 };

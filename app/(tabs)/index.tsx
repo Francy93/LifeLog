@@ -1,3 +1,4 @@
+// app/(tabs)/index.tsx
 import React, { useRef, useState, useEffect } from 'react';
 import {
   View,
@@ -19,9 +20,26 @@ import {
   startRecordingChunk,
   stopRecordingChunk,
   UnifiedRecorder,
+  processAndSaveSegment,
 } from '../../services/recordingService';
+import {
+  cleanupOldSegmentsIfLowStorage,
+  Segment,
+  loadSegments,
+  saveSegments,
+} from '../../services/storageService';
 import { enforceTimeLimit } from '../../services/timeManager';
-import { cleanupOldSegmentsIfLowStorage, saveSegments } from '../../services/storageService';
+
+if (typeof window !== 'undefined') {
+  const SpeechRecognition =
+    (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
+
+  if (!SpeechRecognition) {
+    console.warn('[SpeechRecognition] Not supported in this browser');
+  } else {
+    console.log('[SpeechRecognition] API loaded');
+  }
+}
 
 export default function MainPage() {
   const router = useRouter();
@@ -30,13 +48,18 @@ export default function MainPage() {
   const shouldRecordRef = useRef<boolean>(true);
   const recordingIntervalRef = useRef<any>(null);
   const recordingStartRef = useRef<number>(Date.now());
+  const recordingRef = useRef<boolean>(false);
 
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filteredSegments, setFilteredSegments] = useState<typeof segments>([]);
+  const [filteredSegments, setFilteredSegments] = useState<Segment[]>([]);
 
   const { days, hours, minutes, setDays, setHours, setMinutes } = useTimeLimit();
-  const { segments, setSegments, addSegment, recording, setRecording } = useSegmentContext();
+  const { segments, setSegments, recording, setRecording } = useSegmentContext();
+
+  useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
 
   useEffect(() => {
     if (searchQuery.trim() === '') {
@@ -55,7 +78,6 @@ export default function MainPage() {
     shouldRecordRef.current = true;
 
     if (recordingIntervalRef.current) {
-      console.warn('[Recording] Duplicate interval detected. Clearing existing interval.');
       clearInterval(recordingIntervalRef.current);
     }
 
@@ -66,14 +88,15 @@ export default function MainPage() {
     currentRecorderRef.current = firstRecorder;
 
     recordingIntervalRef.current = setInterval(async () => {
-      if (!shouldRecordRef.current) {
-        console.warn('[Interval Tick] Skipped — recording has been stopped.');
-        return;
-      }
-
-      console.log('[Interval Tick] 30s chunk rotation triggered');
-
       try {
+        const tickTime = new Date().toISOString();
+        console.log('[Interval Tick] triggered at', tickTime);
+
+        if (!shouldRecordRef.current) {
+          console.warn('[Interval Tick] Skipped — recording has been stopped.');
+          return;
+        }
+
         const oldRecorder = currentRecorderRef.current;
 
         if (oldRecorder) {
@@ -81,86 +104,61 @@ export default function MainPage() {
           const timestampStart = recordingStartRef.current;
           const result = await stopRecordingChunk(oldRecorder);
           if (!result) {
-            console.warn('[Chunk Finalize] No audio result to save.');
+            console.warn('[Process] No result from stopRecordingChunk');
             return;
           }
-          const { uri: audioUri, base64 } = result;
+          const { uri: audioUri, base64: audioBase64 } = result;
 
-          const newSegment = {
-            id: String(timestampEnd),
-            timestampStart,
-            timestampEnd,
-            durationMillis: timestampEnd - timestampStart,
-            transcription: 'Simulated transcription',
-            audioUri,
-            audioBase64: base64 ?? '',
-          };
-
-          setSegments((prevSegments) => {
-            const appended = [...prevSegments, newSegment].sort((a, b) => a.timestampEnd - b.timestampEnd);
-            const limited = enforceTimeLimit(appended, days, hours, minutes);
-            saveSegments(limited);
-            console.log(`[Segment Save] Total stored: ${limited.length}`);
-            return limited;
-          });
+          const segment = await processAndSaveSegment(audioUri, timestampStart, audioBase64);
+          if (segment) {
+            const updated = [...segments, segment];
+            const limited = enforceTimeLimit(updated, days, hours, minutes);
+            console.log('[Segments] Updated total:', updated.length);
+            console.log('[Segments] After time limit:', limited.length);
+            setSegments(limited);
+            await saveSegments(limited);
+          }
         }
 
         recordingStartRef.current = Date.now();
         const newRecorder = await startRecordingChunk();
         currentRecorderRef.current = newRecorder;
-
       } catch (err) {
         console.error('[Recording Interval Error]', err);
       }
     }, 30000);
-
-    console.log('[Recording] Interval started');
   };
 
   const stopContinuousRecording = async () => {
-    console.log('[DEBUG] stopContinuousRecording() called');
-    console.log('[Stop] Attempting to stop recording...');
-
     shouldRecordRef.current = false;
     setRecording(false);
 
     if (recordingIntervalRef.current) {
       clearInterval(recordingIntervalRef.current);
       recordingIntervalRef.current = null;
-      console.log('[Stop] Cleared recording interval.');
     }
 
     const lastRecorder = currentRecorderRef.current;
     if (lastRecorder) {
       await finalizeChunk(lastRecorder);
       currentRecorderRef.current = null;
-      console.log('[Stop] Finalized last recorder.');
-    } else {
-      console.log('[Stop] No active recorder to finalize.');
     }
   };
 
   const finalizeChunk = async (recorder: UnifiedRecorder) => {
     const timestampEnd = Date.now();
+    const timestampStart = timestampEnd - 30000;
     const result = await stopRecordingChunk(recorder);
-    if (!result) {
-      console.log('No audio result. Possibly an error or no data recorded.');
-      return;
-    }
+    if (!result) return;
+    const { uri: audioUri, base64: audioBase64 } = result;
 
-    const { uri: audioUri, base64 } = result;
-    const timestampStart = timestampEnd - 30000; // Default chunk duration
-    const newSegment = {
-      id: String(timestampEnd),
-      timestampStart,
-      timestampEnd,
-      durationMillis: timestampEnd - timestampStart,
-      transcription: 'Simulated transcription',
-      audioUri,
-      audioBase64: base64 ?? '',
-    };
-    await addSegment(newSegment);
-    await cleanupOldSegmentsIfLowStorage(100);
+    const segment = await processAndSaveSegment(audioUri, timestampStart, audioBase64);
+    if (segment) {
+      const updated = [...segments, segment];
+      const limited = enforceTimeLimit(updated, days, hours, minutes);
+      setSegments(limited);
+      await saveSegments(limited);
+    }
   };
 
   return (
@@ -180,7 +178,13 @@ export default function MainPage() {
         <View style={styles.centerContent}>
           <TouchableOpacity
             style={styles.recordButton}
-            onPress={recording ? stopContinuousRecording : startContinuousRecording}
+            onPress={() => {
+              if (recordingRef.current) {
+                stopContinuousRecording();
+              } else {
+                startContinuousRecording();
+              }
+            }}
             disabled={loading}
           >
             {loading ? (
@@ -228,6 +232,7 @@ export default function MainPage() {
                       timestampStart: item.timestampStart?.toString(),
                       timestampEnd: item.timestampEnd?.toString(),
                       durationMillis: item.durationMillis?.toString(),
+                      wordsJson: JSON.stringify((item as any).words || []),
                     },
                   })
                 }
