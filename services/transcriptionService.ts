@@ -31,7 +31,7 @@ export const transcribeWithGoogleAPI = async (
             encoding: 'WEBM_OPUS',
             sampleRateHertz: 48000,
             languageCode: 'en-US',
-            enableWordTimeOffsets: false,
+            enableWordTimeOffsets: true,
           },
           audio: { content: base64Audio },
         }),
@@ -46,19 +46,25 @@ export const transcribeWithGoogleAPI = async (
       return null;
     }
 
-    // 🔁 Merge all alternatives from all result segments
+    const words: { word: string; startTime: number; endTime: number }[] = [];
     const transcript = json.results
-      .map((result: any) => result.alternatives?.[0]?.transcript ?? '')
+      .map((result: any) => {
+        const alt = result.alternatives?.[0];
+        if (alt?.words?.length) {
+          alt.words.forEach((w: any) => {
+            words.push({
+              word: w.word,
+              startTime: parseFloat(w.startTime?.replace('s', '') || '0'),
+              endTime: parseFloat(w.endTime?.replace('s', '') || '0'),
+            });
+          });
+        }
+        return alt?.transcript ?? '';
+      })
       .join(' ')
       .trim();
 
     if (!transcript) return null;
-
-    const words = transcript.split(' ').map((word: string, i: number) => ({
-      word,
-      startTime: i * 0.5,
-      endTime: (i + 1) * 0.5,
-    }));
 
     return { text: transcript, words, language: 'en' };
   } catch (err) {

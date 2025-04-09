@@ -102,8 +102,6 @@ export default function Timeline() {
             pathname: '/ConversationDetail',
             params: {
               transcription: item.transcription,
-              audioUri: item.audioUri,
-              audioBase64: item.audioBase64 ?? '',
               timestampStart: item.timestampStart?.toString(),
               timestampEnd: item.timestampEnd?.toString(),
               durationMillis: item.durationMillis?.toString(),

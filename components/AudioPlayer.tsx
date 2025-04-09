@@ -1,5 +1,7 @@
-// Updated AudioPlayer: unified generateWaveformPeaks using audioBase64 for web and mobile
-import React, { useState, useEffect, useRef } from 'react';
+// components/AudioPlayer.tsx
+// ✅ With debug logs to trace playback and onPlaybackUpdate communication
+
+import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import {
   View,
   TouchableOpacity,
@@ -19,12 +21,18 @@ interface AudioPlayerProps {
   audioBase64?: string;
   timestampStart: number;
   duration: number;
+  onPlaybackUpdate?: (time: number) => void;
 }
 
-export default function AudioPlayer({ audioUri, audioBase64, timestampStart, duration }: AudioPlayerProps) {
+const AudioPlayer = forwardRef(function AudioPlayer({
+  audioUri,
+  audioBase64,
+  timestampStart,
+  duration,
+  onPlaybackUpdate
+}: AudioPlayerProps, ref) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [positionMillis, setPositionMillis] = useState(0);
-  const [durationMillis] = useState(duration);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [waveformPeaks, setWaveformPeaks] = useState<number[]>([]);
   const [isReady, setIsReady] = useState(false);
@@ -38,20 +46,35 @@ export default function AudioPlayer({ audioUri, audioBase64, timestampStart, dur
   const visualizerRef = useRef<View>(null);
 
   useEffect(() => {
+    const interval = setInterval(async () => {
+      if (soundRef.current) {
+        const status = await soundRef.current.getStatusAsync();
+        if (status?.isLoaded && status.isPlaying) {
+          console.log('[AudioPlayer] PositionMillis:', status.positionMillis);
+          setPositionMillis(status.positionMillis);
+          if (onPlaybackUpdate) {
+            console.log('[AudioPlayer] Triggering onPlaybackUpdate with time:', status.positionMillis / 1000);
+            onPlaybackUpdate(status.positionMillis / 1000);
+          }
+        }
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, [onPlaybackUpdate]);
+
+  useEffect(() => {
     (async () => {
       if (audioBase64) {
         await generateWaveformPeaks(audioBase64);
       } else {
-        // fallback: show random placeholder waveform
         const fallback = Array(barCount)
           .fill(0)
           .map((_, i) => {
             const t = i / barCount;
-            const base = Math.sin(25 * Math.PI * t); // high-frequency wave
-            const noise = (Math.random() - 0.5) * 0.3; // small noise
+            const base = Math.sin(25 * Math.PI * t);
+            const noise = (Math.random() - 0.5) * 0.3;
             return Math.max(0, Math.min(1, 0.5 + 0.5 * base + noise));
           });
-
         setWaveformPeaks(fallback);
       }
       await loadSound();
@@ -60,6 +83,15 @@ export default function AudioPlayer({ audioUri, audioBase64, timestampStart, dur
       soundRef.current?.unloadAsync();
     };
   }, [audioUri]);
+
+  useImperativeHandle(ref, () => ({
+    pause: async () => {
+      if (soundRef.current) await soundRef.current.pauseAsync();
+    },
+    play: async () => {
+      if (soundRef.current) await soundRef.current.playAsync();
+    },
+  }));
 
   const updateStatus = (status: any) => {
     if (status.isLoaded) {
@@ -85,6 +117,7 @@ export default function AudioPlayer({ audioUri, audioBase64, timestampStart, dur
       );
       soundRef.current = newSound;
       setIsReady(true);
+      console.log('[AudioPlayer] Sound loaded and ready');
     } catch (error) {
       console.error('[Load Error]', error);
       Alert.alert('Errore nel caricamento audio', String(error));
@@ -119,8 +152,10 @@ export default function AudioPlayer({ audioUri, audioBase64, timestampStart, dur
     const status = await soundRef.current.getStatusAsync();
     if (status.isLoaded) {
       if (status.isPlaying) {
+        console.log('[AudioPlayer] Pausing');
         await soundRef.current.pauseAsync();
       } else {
+        console.log('[AudioPlayer] Playing');
         await soundRef.current.playAsync();
       }
     }
@@ -139,7 +174,7 @@ export default function AudioPlayer({ audioUri, audioBase64, timestampStart, dur
         const blob = new Blob([
           Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0))
         ], { type: 'audio/wav' });
-  
+
         const a = Object.assign(document.createElement('a'), {
           href: URL.createObjectURL(blob),
           download: 'audio.wav',
@@ -156,21 +191,20 @@ export default function AudioPlayer({ audioUri, audioBase64, timestampStart, dur
     }
   }
 
-
   const handleSeek = (event: GestureResponderEvent) => {
-    if (!soundRef.current || !isReady || !visualizerRef.current || !isFinite(durationMillis)) return;
+    if (!soundRef.current || !isReady || !visualizerRef.current || !isFinite(duration)) return;
     visualizerRef.current.measure((_x, _y, width, _height, pageX) => {
       const tapX = event.nativeEvent.pageX - pageX;
       const ratio = Math.min(1, Math.max(0, tapX / width));
-      const newPosition = ratio * durationMillis;
+      const newPosition = ratio * duration;
       soundRef.current!.setPositionAsync(newPosition);
       setPositionMillis(newPosition);
     });
   };
 
   const renderBars = () => {
-    const progressRatio = durationMillis > 0 && isFinite(durationMillis)
-      ? positionMillis / durationMillis
+    const progressRatio = duration > 0 && isFinite(duration)
+      ? positionMillis / duration
       : 0;
 
     return (
@@ -244,7 +278,7 @@ export default function AudioPlayer({ audioUri, audioBase64, timestampStart, dur
       </View>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   timestamp: { flexDirection: 'column', alignItems: 'flex-end', gap: 2 },
@@ -259,7 +293,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', position: 'relative', height: 40, overflow: 'hidden',
   },
   progressIndicator: {
-    position: 'absolute', width: 20, height: 20, backgroundColor: '#007AFF', borderRadius: 10, top: '50%', marginTop: -10, // centers vertically
+    position: 'absolute', width: 20, height: 20, backgroundColor: '#007AFF', borderRadius: 10, top: '50%', marginTop: -10,
   },
   speedButton: {
     backgroundColor: '#FFA500', padding: 12, borderRadius: 50, width: 50, height: 50, alignItems: 'center', justifyContent: 'center',
@@ -277,3 +311,5 @@ const styles = StyleSheet.create({
   playButtonText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   downloadIconWrapper: { position: 'absolute', right: 20, padding: 8 },
 });
+
+export default AudioPlayer;
