@@ -13,7 +13,7 @@ export const startRecordingChunk = async (): Promise<UnifiedRecorder> => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: 'audio/webm;codecs=opus',
-        audioBitsPerSecond: 64000
+        audioBitsPerSecond: 64000 // reduce bitrate to make smaller files
       });
       mediaRecorder.start();
       console.log('[startRecordingChunk] Web recorder started');
@@ -111,10 +111,11 @@ export const stopRecordingChunk = async (
 
 export const processAndSaveSegment = async (
   audioUri: string,
-  timestamp: number,
+  timestampStart: number,
+  timestampEnd: number,
   base64: string = ''
 ) => {
-  console.log('[processAndSaveSegment] Started for timestamp:', timestamp);
+  console.log('[processAndSaveSegment] Started for timestamp:', timestampStart);
   let transcription;
 
   try {
@@ -140,15 +141,13 @@ export const processAndSaveSegment = async (
     return;
   }
 
-  const fullTranscript = transcription.text;
-
   const segment = {
     id: Date.now().toString(),
-    timestampStart: timestamp,
-    timestampEnd: timestamp + 30 * 1000,
-    durationMillis: 30 * 1000,
-    transcription: fullTranscript,
-    audioUri: audioUri,
+    timestampStart,
+    timestampEnd,
+    durationMillis: timestampEnd - timestampStart,
+    transcription: transcription.text,
+    audioUri,
     audioBase64: base64,
     words: transcription.words ?? [],
   };

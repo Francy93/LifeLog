@@ -45,9 +45,9 @@ export default function MainPage() {
   const router = useRouter();
 
   const currentRecorderRef = useRef<UnifiedRecorder>(null);
+  const recordingStartRef = useRef<number | null>(null);
   const shouldRecordRef = useRef<boolean>(true);
   const recordingIntervalRef = useRef<any>(null);
-  const recordingStartRef = useRef<number>(Date.now());
   const recordingRef = useRef<boolean>(false);
 
   const [loading, setLoading] = useState(false);
@@ -83,48 +83,34 @@ export default function MainPage() {
 
     setRecording(true);
 
-    recordingStartRef.current = Date.now();
     const firstRecorder = await startRecordingChunk();
+    const firstStart = Date.now();
     currentRecorderRef.current = firstRecorder;
+    recordingStartRef.current = firstStart;
 
     recordingIntervalRef.current = setInterval(async () => {
-      try {
-        const tickTime = new Date().toISOString();
-        console.log('[Interval Tick] triggered at', tickTime);
+      if (!shouldRecordRef.current) return;
+      const oldRecorder = currentRecorderRef.current;
+      const oldStart = recordingStartRef.current;
 
-        if (!shouldRecordRef.current) {
-          console.warn('[Interval Tick] Skipped — recording has been stopped.');
-          return;
+      const newRecorder = await startRecordingChunk();
+      const newStart = Date.now();
+      currentRecorderRef.current = newRecorder;
+      recordingStartRef.current = newStart;
+
+      if (oldRecorder && oldStart) {
+        const result = await stopRecordingChunk(oldRecorder);
+        const end = Date.now();
+
+        if (!result) return;
+
+        const segment = await processAndSaveSegment(result.uri, oldStart, end, result.base64 || '');
+        if (segment) {
+          const updated = [...segments, segment];
+          const limited = enforceTimeLimit(updated, days.toString(), hours.toString(), minutes.toString());
+          setSegments(limited);
+          await saveSegments(limited);
         }
-
-        const oldRecorder = currentRecorderRef.current;
-
-        if (oldRecorder) {
-          const timestampEnd = Date.now();
-          const timestampStart = recordingStartRef.current;
-          const result = await stopRecordingChunk(oldRecorder);
-          if (!result) {
-            console.warn('[Process] No result from stopRecordingChunk');
-            return;
-          }
-          const { uri: audioUri, base64: audioBase64 } = result;
-
-          const segment = await processAndSaveSegment(audioUri, timestampStart, audioBase64);
-          if (segment) {
-            const updated = [...segments, segment];
-            const limited = enforceTimeLimit(updated, days, hours, minutes);
-            console.log('[Segments] Updated total:', updated.length);
-            console.log('[Segments] After time limit:', limited.length);
-            setSegments(limited);
-            await saveSegments(limited);
-          }
-        }
-
-        recordingStartRef.current = Date.now();
-        const newRecorder = await startRecordingChunk();
-        currentRecorderRef.current = newRecorder;
-      } catch (err) {
-        console.error('[Recording Interval Error]', err);
       }
     }, 30000);
   };
@@ -139,26 +125,22 @@ export default function MainPage() {
     }
 
     const lastRecorder = currentRecorderRef.current;
-    if (lastRecorder) {
-      await finalizeChunk(lastRecorder);
-      currentRecorderRef.current = null;
-    }
-  };
+    const lastStart = recordingStartRef.current;
 
-  const finalizeChunk = async (recorder: UnifiedRecorder) => {
-    const timestampEnd = Date.now();
-    const timestampStart = timestampEnd - 30000;
-    const result = await stopRecordingChunk(recorder);
-    if (!result) return;
-    const { uri: audioUri, base64: audioBase64 } = result;
+    if (lastRecorder && lastStart) {
+      const result = await stopRecordingChunk(lastRecorder);
+      const end = Date.now();
+      if (!result) return;
 
-    const segment = await processAndSaveSegment(audioUri, timestampStart, audioBase64);
-    if (segment) {
-      const updated = [...segments, segment];
-      const limited = enforceTimeLimit(updated, days, hours, minutes);
-      setSegments(limited);
-      await saveSegments(limited);
+      const segment = await processAndSaveSegment(result.uri, lastStart, end, result.base64 || '');
+      if (segment) {
+        const updated = [...segments, segment];
+        const limited = enforceTimeLimit(updated, days.toString(), hours.toString(), minutes.toString());
+        setSegments(limited);
+        await saveSegments(limited);
+      }
     }
+    currentRecorderRef.current = null;
   };
 
   return (
