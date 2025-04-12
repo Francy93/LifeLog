@@ -1,18 +1,18 @@
 // hooks/useSegments.ts
-
 import { useEffect, useState } from 'react';
 import { loadSegments, saveSegments } from '../services/storageService';
 
 export interface Segment {
   id: string;
-  timestampStart:   number; // ✅ Added for duration calculation
-  timestampEnd:     number; // ✅ Added for timeline display
-  durationMillis:   number; // ✅ Added for duration calculation
-  transcription:    string; // ✅ Added for persistent transcription on native
-  audioUri:         string; // ✅ Added for persistent audio on native
-  audioBase64:      string; // ✅ Added for persistent audio on web
+  timestampStart: number;
+  timestampEnd: number;
+  durationMillis: number;
+  transcription: string;
+  audioUri: string;
+  audioBase64: string;
+  // ✅ Optional word-level metadata for highlighting
+  words?: { word: string; startTime: number; endTime: number }[];
 }
-
 
 export function useSegments() {
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -24,9 +24,6 @@ export function useSegments() {
     })();
   }, []);
 
-  /**
-   * Append a new segment to the list, avoiding overwrite due to stale state.
-   */
   const addSegment = (newSegment: Segment) => {
     setSegments((prevSegments) => {
       const updated = [...prevSegments, newSegment].sort(
@@ -50,11 +47,21 @@ export function useSegments() {
     saveSegments([]);
   };
 
+  const getSegmentIndexByTimestamp = (timestamp: number): number => {
+    return segments.findIndex(seg => seg.timestampStart === timestamp);
+  };
+
+  const getAdjacentSegments = (index: number): Segment[] => {
+    return segments.slice(Math.max(0, index - 1), index + 2);
+  };
+
   return {
     segments,
     setSegments,
     addSegment,
     removeSegment,
     clearSegments,
+    getSegmentIndexByTimestamp,
+    getAdjacentSegments,
   };
 }

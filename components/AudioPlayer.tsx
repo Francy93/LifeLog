@@ -1,6 +1,4 @@
 // components/AudioPlayer.tsx
-// ✅ With debug logs to trace playback and onPlaybackUpdate communication
-
 import React, { useState, useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import {
   View,
@@ -22,6 +20,8 @@ interface AudioPlayerProps {
   timestampStart: number;
   duration: number;
   onPlaybackUpdate?: (time: number) => void;
+  onNext?: () => void;
+  onPrevious?: () => void;
 }
 
 const AudioPlayer = forwardRef(function AudioPlayer({
@@ -29,7 +29,9 @@ const AudioPlayer = forwardRef(function AudioPlayer({
   audioBase64,
   timestampStart,
   duration,
-  onPlaybackUpdate
+  onPlaybackUpdate,
+  onNext,
+  onPrevious
 }: AudioPlayerProps, ref) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [positionMillis, setPositionMillis] = useState(0);
@@ -50,10 +52,8 @@ const AudioPlayer = forwardRef(function AudioPlayer({
       if (soundRef.current) {
         const status = await soundRef.current.getStatusAsync();
         if (status?.isLoaded && status.isPlaying) {
-          console.log('[AudioPlayer] PositionMillis:', status.positionMillis);
           setPositionMillis(status.positionMillis);
           if (onPlaybackUpdate) {
-            console.log('[AudioPlayer] Triggering onPlaybackUpdate with time:', status.positionMillis / 1000);
             onPlaybackUpdate(status.positionMillis / 1000);
           }
         }
@@ -97,6 +97,9 @@ const AudioPlayer = forwardRef(function AudioPlayer({
     if (status.isLoaded) {
       setPositionMillis(status.positionMillis);
       setIsPlaying(status.isPlaying);
+      if (status.didJustFinish && !status.isLooping && onNext) {
+        onNext();
+      }
     }
   };
 
@@ -117,9 +120,7 @@ const AudioPlayer = forwardRef(function AudioPlayer({
       );
       soundRef.current = newSound;
       setIsReady(true);
-      console.log('[AudioPlayer] Sound loaded and ready');
     } catch (error) {
-      console.error('[Load Error]', error);
       Alert.alert('Errore nel caricamento audio', String(error));
     }
   }
@@ -152,10 +153,8 @@ const AudioPlayer = forwardRef(function AudioPlayer({
     const status = await soundRef.current.getStatusAsync();
     if (status.isLoaded) {
       if (status.isPlaying) {
-        console.log('[AudioPlayer] Pausing');
         await soundRef.current.pauseAsync();
       } else {
-        console.log('[AudioPlayer] Playing');
         await soundRef.current.playAsync();
       }
     }
@@ -262,13 +261,13 @@ const AudioPlayer = forwardRef(function AudioPlayer({
 
       <View style={styles.controlsContainer}>
         <View style={styles.controlsRow}>
-          <TouchableOpacity style={styles.navButton} onPress={() => Alert.alert('Segmento precedente')}>
+          <TouchableOpacity style={styles.navButton} onPress={onPrevious}>
             <Ionicons name="play-skip-back" size={20} color="white" />
           </TouchableOpacity>
           <TouchableOpacity onPress={playAudio} style={styles.playButton}>
             <Ionicons name={isPlaying ? 'pause' : 'play'} size={24} color="white" />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.navButton} onPress={() => Alert.alert('Segmento successivo')}>
+          <TouchableOpacity style={styles.navButton} onPress={onNext}>
             <Ionicons name="play-skip-forward" size={20} color="white" />
           </TouchableOpacity>
         </View>
