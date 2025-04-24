@@ -1,22 +1,49 @@
 // app/(modals)/ConversationDetail.tsx
-import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Platform } from 'react-native';
+// -----------------------------------------------------------------------------
+// Conversation Detail Screen
+// Displays a scrollable transcript with an audio player.
+// Provides smooth navigation between segments (buttons + per-row play icon)
+// and keeps the current segment 100 px below the top to preview previous lines.
+// -----------------------------------------------------------------------------
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import {
+  Platform,
+  UIManager,
+  LayoutAnimation,
+  StyleSheet,
+  type StyleProp,
+  type ViewStyle,
+  type TextStyle,
+  Pressable,
   View,
   Text,
-  StyleSheet,
   Dimensions,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
   FlatList,
-} from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
-import AudioPlayer from '../../components/AudioPlayer';
-import { useSegmentContext } from '../../components/SegmentContext';
-import type { Segment } from '../../hooks/useSegments';
-import { LinearGradient } from 'expo-linear-gradient';
+} from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { useLocalSearchParams } from "expo-router";
 
-const SCREEN_HEIGHT = Dimensions.get('window').height;
+import AudioPlayer from "../../components/AudioPlayer";
+import { useSegmentContext } from "../../components/SegmentContext";
+import type { Segment } from "../../hooks/useSegments";
+
+// Enable layout animation on Android
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  // @ts-ignore – RN typings
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+// -----------------------------------------------------------------------------
+// Constants & types
+// -----------------------------------------------------------------------------
+const SCREEN_HEIGHT = Dimensions.get("window").height;
+const PREVIEW_OFFSET = 100; // px – space shown above the current segment
 
 interface Word {
   word: string;
@@ -24,253 +51,347 @@ interface Word {
   endTime: number;
 }
 
+// Helper – quick rough text height estimate (10 words ≈ one 22 px line)
+const estimateHeight = (t: string) =>
+  Math.ceil(t.split(/\s+/).length / 10) * 22;
+
+// -----------------------------------------------------------------------------
+// Component
+// -----------------------------------------------------------------------------
 export default function ConversationDetail() {
+  // ------------------------------ route params ------------------------------
   const { timestampStart, durationMillis } = useLocalSearchParams<{
     timestampStart: string;
     durationMillis: string;
   }>();
-
   const initialTimestamp = Number(timestampStart);
 
+  // ------------------------------ state -------------------------------------
   const [activeTimestamp, setActiveTimestamp] = useState(initialTimestamp);
-  const [segmentAudioUri, setSegmentAudioUri] = useState('');
-  const [segmentAudioBase64, setSegmentAudioBase64] = useState('');
-  const [currentTime, setCurrentTime] = useState(0);
-  const [segmentGroup, setSegmentGroup] = useState<(Segment & { words?: Word[] })[]>([]);
-  const [range, setRange] = useState({ start: 0, end: 0 });
-  const [initialScrollDone, setInitialScrollDone] = useState(false);
-  const [scrollToCurrentSegmentPending, setScrollToCurrentSegmentPending] = useState(true);
-  const hasScrolledRef = useRef(false);
-  const userHasScrolledUpRef = useRef(false);
-  const lastScrollYRef = useRef(0);
+  const [segmentAudioUri, setSegmentAudioUri] = useState("");
+  const [segmentAudioBase64, setSegmentAudioBase64] = useState("");
+  const [currentTime, setCurrentTime] = useState(0); // progress for highlight
 
+  // sliding window of segments displayed
+  const [segmentGroup, setSegmentGroup] = useState<
+    (Segment & { words?: Word[] })[]
+  >([]);
+  const [range, setRange] = useState({ start: 0, end: 0 });
+
+  // flags
+  const [scrollPending, setScrollPending] = useState(true); // auto-scroll in flight
+  const [styleReady, setStyleReady] = useState(true); // show active style?
+
+  // ------------------------------ refs --------------------------------------
+  const hasScrolledRef = useRef(false); // prevents prepend on first mount
   const listRef = useRef<FlatList<any>>(null);
   const segmentRefs = useRef<(View | null)[]>([]);
 
-  const {
-    segments,
-    getSegmentIndexByTimestamp,
-    setActiveSegment,
-  } = useSegmentContext();
+  // ------------------------------ context -----------------------------------
+  const { segments, getSegmentIndexByTimestamp, setActiveSegment } =
+    useSegmentContext();
+  const currentIndex = getSegmentIndexByTimestamp(activeTimestamp);
 
-  const currentSegmentIndex = getSegmentIndexByTimestamp(activeTimestamp);
-
-  const sliceSegmentGroup = (start: number, end: number) => {
-    setSegmentGroup(segments.slice(start, end));
-    setRange({ start, end });
+  // -------------------------------------------------------------------------
+  // UTIL – centralised selection logic (nav buttons + play icons)
+  // -------------------------------------------------------------------------
+  const selectSegment = (timestamp: number) => {
+    setCurrentTime(0); // reset highlight
+    setStyleReady(false); // keep grey until scroll finishes
+    setActiveTimestamp(timestamp);
+    setScrollPending(true);
   };
 
-  const navigateSegment = (offset: number) => {
-    const index = currentSegmentIndex + offset;
-    if (index >= 0 && index < segments.length) {
-      setActiveTimestamp(segments[index].timestampStart);
-      setScrollToCurrentSegmentPending(true);
-    }
-  };
-
-
+  // -------------------------------------------------------------------------
+  // Build / update the sliding window whenever active segment changes
+  // -------------------------------------------------------------------------
   useEffect(() => {
-    let start = Math.max(0, currentSegmentIndex - 1);
-    let end = currentSegmentIndex + 1;
-    let totalHeight = 0;
-    const measureText = (text: string) => {
-      const words = text.split(/\s+/);
-      const lines = Math.ceil(words.length / 10);
-      return lines * 22;
-    };
+    let start = Math.max(0, currentIndex - 1);
+    let end = currentIndex + 1;
+    let total = 0;
 
-    while (end < segments.length && totalHeight < SCREEN_HEIGHT * 0.75) {
-      totalHeight += measureText(segments[end].transcription);
+    while (end < segments.length && total < SCREEN_HEIGHT * 0.75) {
+      total += estimateHeight(segments[end].transcription);
       end++;
     }
 
     setRange({ start, end });
-    const group = segments.slice(start, end);
-    setSegmentGroup(group);
-    const selected = group.find(s => s.timestampStart === activeTimestamp);
+    const window = segments.slice(start, end);
+    setSegmentGroup(window);
+
+    const selected = window.find((s) => s.timestampStart === activeTimestamp);
     if (selected) {
       setActiveSegment(selected);
-      if (selected.audioUri) setSegmentAudioUri(selected.audioUri);
-      if (selected.audioBase64) setSegmentAudioBase64(selected.audioBase64);
+      setSegmentAudioUri(selected.audioUri || "");
+      setSegmentAudioBase64(selected.audioBase64 || "");
     }
   }, [activeTimestamp]);
 
+  // -------------------------------------------------------------------------
+  // Scroll listener – disabled while auto-scroll is taking place
+  // -------------------------------------------------------------------------
+  const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (scrollPending) return;
 
+    const { y: offsetY } = e.nativeEvent.contentOffset;
+    const { height: viewHeight } = e.nativeEvent.layoutMeasurement;
+    const contentHeight = e.nativeEvent.contentSize.height;
 
-  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const offsetY = event.nativeEvent.contentOffset.y;
-    if (offsetY < lastScrollYRef.current) {
-      userHasScrolledUpRef.current = true;
-    }
-    lastScrollYRef.current = offsetY;
-
-    const scrollHeight = event.nativeEvent.contentSize.height;
-    const viewHeight = event.nativeEvent.layoutMeasurement.height;
-
-    const currentStart = range.start;
-    const currentEnd = range.end;
-
-    if (offsetY + viewHeight >= scrollHeight - 40 && currentEnd < segments.length) {
-      const newEnd = Math.min(segments.length, currentEnd + 3);
-      sliceSegmentGroup(currentStart, newEnd);
-    }
-
+    // ---------- append when near bottom ----------
     if (
-      offsetY <= 5 &&
-      currentStart > 0 &&
-      initialScrollDone &&
-      hasScrolledRef.current &&
-      userHasScrolledUpRef.current
+      offsetY + viewHeight >= contentHeight - 40 &&
+      range.end < segments.length
     ) {
-      const newStart = Math.max(0, currentStart - 3);
-      sliceSegmentGroup(newStart, range.end);
+      const newEnd = Math.min(segments.length, range.end + 3);
+      setRange((r) => ({ ...r, end: newEnd }));
+      setSegmentGroup(segments.slice(range.start, newEnd));
+    }
+
+    // ---------- prepend when user scrolls to top ----------
+    if (offsetY <= 5 && hasScrolledRef.current && range.start > 0) {
+      const newStart = Math.max(0, range.start - 3);
+      setRange((r) => ({ ...r, start: newStart }));
+      setSegmentGroup(segments.slice(newStart, range.end));
     }
   };
 
+  // -------------------------------------------------------------------------
+  // Navigation buttons (prev / next)
+  // -------------------------------------------------------------------------
+  const navigateSegment = (delta: number) => {
+    const idx = currentIndex + delta;
+    if (idx >= 0 && idx < segments.length)
+      selectSegment(segments[idx].timestampStart);
+  };
 
-  const renderItem = useCallback(function renderSegment({ item, index }: { item: Segment, index: number }) {
-    const isCurrent = item.timestampStart === activeTimestamp;
-    const textStyle = isCurrent ? styles.currentTranscript : styles.fadedTranscript;
+  // -------------------------------------------------------------------------
+  // Row renderer
+  // -------------------------------------------------------------------------
+  const renderItem = useCallback(
+    ({ item, index }: { item: Segment; index: number }) => {
+      const isCurrent = item.timestampStart === activeTimestamp;
+      const currentRow = segmentGroup.findIndex(
+        (s) => s.timestampStart === activeTimestamp
+      );
 
-    return (
-      <View ref={(ref: View | null) => (segmentRefs.current[index] = ref)} style={{ marginBottom: 20 }}>
-        {isCurrent ? (
-          <Text style={styles.currentTranscript}>
-            {(item.words || []).map((word: Word, i: number) => {
-              const isHighlighted = currentTime >= word.endTime;
-              return (
-                <Text
-                  key={i}
+      // preview offset only on web as CSS prop
+      const containerStyle: ViewStyle =
+        Platform.OS === "web" && index === currentRow
+          ? ({ scrollMarginTop: PREVIEW_OFFSET } as any)
+          : {};
 
-                  style={{
-                    fontSize: 18,
-                    lineHeight: 24,
-                    color: isHighlighted ? 'blue' : 'black',
-                    fontWeight: 'normal',
-                  }}
-                >
-                  {word.word + ' '}
-                </Text>
-              );
-            })}
-          </Text>
-        ) : (
-          <Text style={textStyle}>{item.transcription}</Text>
-        )}
-        <Text style={{ fontSize: 12, color: '#aaa', textAlign: 'right' }}>
-          {new Date(item.timestampStart).toLocaleTimeString()}
-        </Text>
-      </View>
-    );
-  }, [activeTimestamp, currentTime]);
+      const baseStyle = isCurrent ? styles.currentBase : styles.faded;
+      const stateStyle = isCurrent
+        ? styleReady
+          ? styles.currentActive
+          : styles.currentInactive
+        : null;
 
+      return (
+        <View
+          ref={(r) => (segmentRefs.current[index] = r)}
+          style={[styles.segmentRow, containerStyle]}
+        >
+          {/* text block */}
+          {isCurrent ? (
+            <Text style={[baseStyle, stateStyle] as StyleProp<TextStyle>}>
+              {(item.words || []).map((w, i) => {
+                const done = styleReady && currentTime >= w.endTime;
+                return (
+                  <Text
+                    key={i}
+                    style={{
+                      color: done ? "blue" : styleReady ? "#000" : "#999",
+                    }}
+                  >
+                    {w.word + " "}
+                  </Text>
+                );
+              })}
+            </Text>
+          ) : (
+            <Text style={[baseStyle] as StyleProp<TextStyle>}>
+              {item.transcription}
+            </Text>
+          )}
 
-  const currentInGroup = segmentGroup.findIndex(s => s.timestampStart === activeTimestamp);
+          {/* timestamp + play */}
+          <View style={styles.timestampRow}>
+            <Pressable onPress={() => selectSegment(item.timestampStart)}>
+              <Ionicons
+                name="play"
+                size={14}
+                color="#555"
+                style={styles.playIcon}
+              />
+            </Pressable>
+            <Text style={styles.timestamp}>
+              {new Date(item.timestampStart).toLocaleTimeString()}
+            </Text>
+          </View>
+        </View>
+      );
+    },
+    [activeTimestamp, currentTime, styleReady, segmentGroup]
+  );
 
+  // -------------------------------------------------------------------------
+  // Auto‑scroll to current segment (both web & native)
+  // -------------------------------------------------------------------------
+  const currentRowIndex = segmentGroup.findIndex(
+    (s) => s.timestampStart === activeTimestamp
+  );
 
   useEffect(() => {
-    if (
-      scrollToCurrentSegmentPending &&
-      currentInGroup >= 0 &&
-      currentInGroup < segmentGroup.length
-    ) {
+    if (!scrollPending || currentRowIndex < 0) return;
+
+    // delay until FlatList renders
+    setTimeout(() => {
+      const target = segmentRefs.current[currentRowIndex];
+      const container: any =
+        (listRef.current as any)?.getScrollableNode?.() || listRef.current;
+      if (!target || !container) return;
+
+      if (Platform.OS === "web") {
+        (target as any).scrollIntoView({ behavior: "smooth", block: "start" });
+      } else if (
+        "measureLayout" in target &&
+        typeof container.getScrollResponder === "function"
+      ) {
+        target.measureLayout(
+          container.getScrollResponder(),
+          (_x: number, y: number) =>
+            container.scrollToOffset({
+              offset: Math.max(y - PREVIEW_OFFSET, 0),
+              animated: true,
+            }),
+          () => console.error("measureLayout error")
+        );
+      }
+
+      // after scroll finishes, enable highlight & re‑allow scroll listener
       setTimeout(() => {
-        requestAnimationFrame(() => {
-          const container = listRef.current;
-          const target = segmentRefs.current[currentInGroup];
-          if (!target || !container) return;
-          if (Platform.OS === 'web') {
-            (target as unknown as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
-          } else if ('measureLayout' in target) {
-            (target as any).measureLayout(
-              container.getScrollResponder(),
-              (_x: number, y: number) => {
-                container.scrollToOffset({ offset: Math.max(y - 64, 0), animated: true });
-              },
-              (error: unknown) => { console.error('Error measuring layout:', error); }
-            );
-          }
-          setScrollToCurrentSegmentPending(false);
-          setInitialScrollDone(true);
-          hasScrolledRef.current = true;
-
-        });
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setCurrentTime(0);
+        setStyleReady(true);
+        setScrollPending(false);
+        hasScrolledRef.current = true;
       }, 150);
-    }
-  }, [scrollToCurrentSegmentPending, currentInGroup, segmentGroup]);
+    }, 0);
+  }, [scrollPending, currentRowIndex]);
 
+  // -------------------------------------------------------------------------
+  // Playback progress – ignore updates during auto‑scroll
+  // -------------------------------------------------------------------------
+  const handlePlaybackUpdate = useCallback(
+    (t: number) => !scrollPending && setCurrentTime(t),
+    [scrollPending]
+  );
 
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
   return (
     <View style={styles.container}>
-      {currentInGroup !== -1 && segmentGroup.length > 0 && (<React.Fragment>
-        <View style={styles.fadeContainer}>
-          <LinearGradient colors={["#fff", "transparent"]} style={styles.topFade} /><FlatList
-            ref={listRef}
-            data={segmentGroup}
+      {currentRowIndex >= 0 && (
+        <>
+          {/* transcript list */}
+          <View style={styles.fadeContainer}>
+            <LinearGradient
+              colors={["#fff", "transparent"]}
+              style={styles.topFade}
+            />
+            <FlatList
+              ref={listRef}
+              data={segmentGroup}
+              keyExtractor={(s) => s.id}
+              renderItem={renderItem}
+              onScroll={handleScroll}
+              scrollEventThrottle={16}
+              contentContainerStyle={styles.transcriptionContainer}
+              showsVerticalScrollIndicator={false}
+            />
+            <LinearGradient
+              colors={["transparent", "#fff"]}
+              style={styles.bottomFade}
+            />
+          </View>
 
-            keyExtractor={(item) => item.id}
-            renderItem={renderItem}
-            onScroll={handleScroll}
-            scrollEventThrottle={16}
-            contentContainerStyle={styles.transcriptionContainer}
-            showsVerticalScrollIndicator={false}
+          {/* audio player */}
+          <AudioPlayer
+            audioUri={segmentAudioUri}
+            audioBase64={segmentAudioBase64}
+            timestampStart={activeTimestamp}
+            duration={Number(durationMillis)}
+            onPlaybackUpdate={handlePlaybackUpdate}
+            onNext={() => navigateSegment(1)}
+            onPrevious={() => navigateSegment(-1)}
           />
-          <LinearGradient colors={["transparent", "#fff"]} style={styles.bottomFade} />
-        </View>
-
-        <AudioPlayer
-          audioUri={segmentAudioUri}
-          audioBase64={segmentAudioBase64}
-          timestampStart={activeTimestamp}
-          duration={Number(durationMillis)}
-          onPlaybackUpdate={setCurrentTime}
-          onNext={() => navigateSegment(1)}
-          onPrevious={() => navigateSegment(-1)}
-        />
-      </React.Fragment>)}</View>
+        </>
+      )}
+    </View>
   );
 }
 
-
+// -----------------------------------------------------------------------------
+// Styles
+// -----------------------------------------------------------------------------
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
+  container: { 
+    flex: 1, 
+    backgroundColor: "#fff" 
   },
-  fadeContainer: {
-    flex: 3,
-    position: 'relative',
+
+  // transcript list wrapper
+  fadeContainer: { 
+    flex: 3, 
+    position: "relative" 
   },
   transcriptionContainer: {
     paddingHorizontal: 20,
     paddingTop: 40,
     paddingBottom: SCREEN_HEIGHT * 0.25,
   },
-  currentTranscript: {
-    fontSize: 18,
-    lineHeight: 24,
-    color: '#000',
-    marginBottom: 10,
-    flexWrap: 'wrap',
-  },
-  fadedTranscript: {
-    fontSize: 16,
-    lineHeight: 22,
-    color: '#999',
-    marginBottom: 10,
-  },
   topFade: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     height: 40,
-    width: '100%',
+    width: "100%",
     zIndex: 2,
   },
   bottomFade: {
-    position: 'absolute',
+    position: "absolute",
     bottom: 0,
     height: 40,
-    width: '100%',
+    width: "100%",
     zIndex: 2,
   },
+
+  // individual segment row
+  segmentRow: { marginBottom: 20 },
+  currentActive: { color: "#000" },
+  currentInactive: { color: "#999" },
+  currentBase: { 
+    fontSize: 18, 
+    lineHeight: 24, 
+    flexWrap: "wrap" 
+  },
+  faded: { 
+    fontSize: 16, 
+    lineHeight: 22, 
+    color: "#999" 
+  },
+
+  // timestamp / play
+  timestampRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    marginTop: 4,
+  },
+  timestamp: { 
+    fontSize: 12, 
+    color: "#aaa" 
+  },
+  playIcon: { marginRight: 4 },
 });
