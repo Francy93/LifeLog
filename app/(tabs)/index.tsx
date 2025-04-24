@@ -22,133 +22,143 @@ import {
   UnifiedRecorder,
   processAndSaveSegment,
 } from '../../services/recordingService';
-import {
-  cleanupOldSegmentsIfLowStorage,
-  Segment,
-  loadSegments,
-  saveSegments,
-} from '../../services/storageService';
+import { Segment, saveSegments } from '../../services/storageService';
 import { enforceTimeLimit } from '../../services/timeManager';
 
-if (typeof window !== 'undefined') {
-  const SpeechRecognition =
-    (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
-
-  if (!SpeechRecognition) {
-    console.warn('[SpeechRecognition] Not supported in this browser');
-  } else {
-    console.log('[SpeechRecognition] API loaded');
-  }
-}
+// ---------------------------------------------------------------------
+// Constants & helpers
+// ---------------------------------------------------------------------
+const CHUNK_INTERVAL_MS = 30_000; // 30 seconds
 
 export default function MainPage() {
   const router = useRouter();
 
-  const currentRecorderRef = useRef<UnifiedRecorder>(null);
-  const recordingStartRef = useRef<number | null>(null);
-  const shouldRecordRef = useRef<boolean>(true);
-  const recordingIntervalRef = useRef<any>(null);
-  const recordingRef = useRef<boolean>(false);
+  // --- recording refs -------------------------------------------------
+  const recorderRef = useRef<UnifiedRecorder | null>(null);
+  const chunkStartRef = useRef<number | null>(null);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isRecordingRef = useRef<boolean>(false);
 
+  // --- global state ---------------------------------------------------
+  const { days, hours, minutes, setDays, setHours, setMinutes } = useTimeLimit();
+  const { segments, setSegments, recording, setRecording } = useSegmentContext();
+
+  // --- UI state -------------------------------------------------------
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredSegments, setFilteredSegments] = useState<Segment[]>([]);
 
-  const { days, hours, minutes, setDays, setHours, setMinutes } = useTimeLimit();
-  const { segments, setSegments, recording, setRecording } = useSegmentContext();
+  // -------------------------------------------------------------------
+  //  Internal helpers for managing segments
+  // -------------------------------------------------------------------
+  const appendSegment = (segment: Segment) => {
+    setSegments(prev => {
+      const limited = enforceTimeLimit(
+        [...prev, segment],
+        days.toString(),
+        hours.toString(),
+        minutes.toString(),
+      );
+      saveSegments(limited); // async fire‑and‑forget
+      return limited;
+    });
+  };
 
+  // -------------------------------------------------------------------
+  // Finishes a recording chunk: stops the recorder, runs speech‑to‑text,
+  // persists the new segment, and appends it to state (respecting time limit).
+  // -------------------------------------------------------------------
+  const finalizeChunk = async (recorder: UnifiedRecorder, start: number) => {
+    const result = await stopRecordingChunk(recorder);
+    if (!result) return;
+
+    const segment = await processAndSaveSegment(
+      result.uri,
+      start,
+      Date.now(),
+      result.base64 ?? '',
+    );
+    if (segment) appendSegment(segment);
+  };
+
+
+  // -------------------------------------------------------------------
+  //  Effects for loading and filtering segments
+  // -------------------------------------------------------------------
   useEffect(() => {
-    recordingRef.current = recording;
+    isRecordingRef.current = recording;
   }, [recording]);
 
   useEffect(() => {
-    if (searchQuery.trim() === '') {
+    if (!searchQuery.trim()) {
       setFilteredSegments([]);
       return;
     }
-    const filtered = segments.filter((s) =>
-      s.transcription.toLowerCase().includes(searchQuery.toLowerCase())
+    const lower = searchQuery.toLowerCase();
+    setFilteredSegments(
+      segments.filter(s => s.transcription.toLowerCase().includes(lower)),
     );
-    setFilteredSegments(filtered);
   }, [searchQuery, segments]);
 
+  // -------------------------------------------------------------------
+  //  Recording flow for chunks
+  // -------------------------------------------------------------------
   const startContinuousRecording = async () => {
-    console.log('[Recording] startContinuousRecording called');
-
-    shouldRecordRef.current = true;
-
-    if (recordingIntervalRef.current) {
-      clearInterval(recordingIntervalRef.current);
-    }
+    if (intervalRef.current) clearInterval(intervalRef.current);
 
     setRecording(true);
 
-    const firstRecorder = await startRecordingChunk();
-    const firstStart = Date.now();
-    currentRecorderRef.current = firstRecorder;
-    recordingStartRef.current = firstStart;
+    recorderRef.current = await startRecordingChunk();
+    chunkStartRef.current = Date.now();
 
-    recordingIntervalRef.current = setInterval(async () => {
-      if (!shouldRecordRef.current) return;
-      const oldRecorder = currentRecorderRef.current;
-      const oldStart = recordingStartRef.current;
+    intervalRef.current = setInterval(async () => {
+      if (!isRecordingRef.current) return;
 
-      const newRecorder = await startRecordingChunk();
-      const newStart = Date.now();
-      currentRecorderRef.current = newRecorder;
-      recordingStartRef.current = newStart;
+      const previousRecorder = recorderRef.current;
+      const previousStart = chunkStartRef.current;
 
-      if (oldRecorder && oldStart) {
-        const result = await stopRecordingChunk(oldRecorder);
-        const end = Date.now();
+      recorderRef.current = await startRecordingChunk();
+      chunkStartRef.current = Date.now();
 
-        if (!result) return;
-
-        const segment = await processAndSaveSegment(result.uri, oldStart, end, result.base64 || '');
-        if (segment) {
-          const updated = [...segments, segment];
-          const limited = enforceTimeLimit(updated, days.toString(), hours.toString(), minutes.toString());
-          setSegments(limited);
-          await saveSegments(limited);
-        }
+      if (previousRecorder && previousStart !== null) {
+        await finalizeChunk(previousRecorder, previousStart);
       }
-    }, 30000);
+    }, CHUNK_INTERVAL_MS);
   };
 
+
+  // --------------------------------------------------------------------
+  //  Stop recording and process the last chunk
+  // --------------------------------------------------------------------
   const stopContinuousRecording = async () => {
-    shouldRecordRef.current = false;
     setRecording(false);
 
-    if (recordingIntervalRef.current) {
-      clearInterval(recordingIntervalRef.current);
-      recordingIntervalRef.current = null;
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
     }
 
-    const lastRecorder = currentRecorderRef.current;
-    const lastStart = recordingStartRef.current;
+    const lastRecorder = recorderRef.current;
+    const lastStart = chunkStartRef.current;
 
-    if (lastRecorder && lastStart) {
-      const result = await stopRecordingChunk(lastRecorder);
-      const end = Date.now();
-      if (!result) return;
+    recorderRef.current = null;
+    chunkStartRef.current = null;
 
-      const segment = await processAndSaveSegment(result.uri, lastStart, end, result.base64 || '');
-      if (segment) {
-        const updated = [...segments, segment];
-        const limited = enforceTimeLimit(updated, days.toString(), hours.toString(), minutes.toString());
-        setSegments(limited);
-        await saveSegments(limited);
-      }
+    if (lastRecorder && lastStart !== null) {
+      await finalizeChunk(lastRecorder, lastStart);
     }
-    currentRecorderRef.current = null;
   };
 
+  // -------------------------------------------------------------------
+  //  UI rendering and layout
+  // -------------------------------------------------------------------
   return (
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={RNPlatform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.container}>
+        {/* Search bar */}
         <TextInput
           style={styles.searchBar}
           placeholder="Search conversations..."
@@ -157,16 +167,11 @@ export default function MainPage() {
           onChangeText={setSearchQuery}
         />
 
+        {/* Record button */}
         <View style={styles.centerContent}>
           <TouchableOpacity
             style={styles.recordButton}
-            onPress={() => {
-              if (recordingRef.current) {
-                stopContinuousRecording();
-              } else {
-                startContinuousRecording();
-              }
-            }}
+            onPress={recording ? stopContinuousRecording : startContinuousRecording}
             disabled={loading}
           >
             {loading ? (
@@ -179,29 +184,31 @@ export default function MainPage() {
           </TouchableOpacity>
         </View>
 
+        {/* Time‑limit inputs */}
         <View style={styles.timeContainer}>
-          {['Days', 'Hours', 'Minutes'].map((label, i) => {
-            const values = [days, hours, minutes];
-            const setters = [setDays, setHours, setMinutes];
-            return (
-              <View key={label} style={styles.timeField}>
-                <Text style={styles.timeLabel}>{label}</Text>
-                <TextInput
-                  style={styles.timeInput}
-                  placeholder="0"
-                  keyboardType="numeric"
-                  value={values[i]}
-                  onChangeText={setters[i]}
-                />
-              </View>
-            );
-          })}
+          {[
+            { label: 'Days', value: days, setter: setDays },
+            { label: 'Hours', value: hours, setter: setHours },
+            { label: 'Minutes', value: minutes, setter: setMinutes },
+          ].map(({ label, value, setter }) => (
+            <View key={label} style={styles.timeField}>
+              <Text style={styles.timeLabel}>{label}</Text>
+              <TextInput
+                style={styles.timeInput}
+                placeholder="0"
+                keyboardType="numeric"
+                value={value}
+                onChangeText={setter}
+              />
+            </View>
+          ))}
         </View>
 
+        {/* Search results */}
         {filteredSegments.length > 0 && (
           <FlatList
             data={filteredSegments}
-            keyExtractor={(item) => item.id}
+            keyExtractor={item => item.id}
             renderItem={({ item }) => (
               <TouchableOpacity
                 onPress={() =>
@@ -236,6 +243,9 @@ export default function MainPage() {
   );
 }
 
+// ---------------------------------------------------------------------
+//  Styles
+// ---------------------------------------------------------------------
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { flex: 1, padding: 20, backgroundColor: Colors.light.background },
