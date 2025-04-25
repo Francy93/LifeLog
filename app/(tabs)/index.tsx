@@ -5,7 +5,6 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  FlatList,
   StyleSheet,
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -28,7 +27,7 @@ import { enforceTimeLimit } from '../../services/timeManager';
 // ---------------------------------------------------------------------
 // Constants & helpers
 // ---------------------------------------------------------------------
-const CHUNK_INTERVAL_MS = 30_000; // 30 seconds
+const CHUNK_INTERVAL_MS = 30_000; // 30 seconds
 
 export default function MainPage() {
   const router = useRouter();
@@ -45,11 +44,9 @@ export default function MainPage() {
 
   // --- UI state -------------------------------------------------------
   const [loading, setLoading] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filteredSegments, setFilteredSegments] = useState<Segment[]>([]);
 
   // -------------------------------------------------------------------
-  //  Internal helpers for managing segments
+  //  Internal helpers
   // -------------------------------------------------------------------
   const appendSegment = (segment: Segment) => {
     setSegments(prev => {
@@ -59,14 +56,13 @@ export default function MainPage() {
         hours.toString(),
         minutes.toString(),
       );
-      saveSegments(limited); // async fire‑and‑forget
+      saveSegments(limited);
       return limited;
     });
   };
 
   // -------------------------------------------------------------------
-  // Finishes a recording chunk: stops the recorder, runs speech‑to‑text,
-  // persists the new segment, and appends it to state (respecting time limit).
+  //  Recording helpers for chunking
   // -------------------------------------------------------------------
   const finalizeChunk = async (recorder: UnifiedRecorder, start: number) => {
     const result = await stopRecordingChunk(recorder);
@@ -81,27 +77,13 @@ export default function MainPage() {
     if (segment) appendSegment(segment);
   };
 
-
-  // -------------------------------------------------------------------
-  //  Effects for loading and filtering segments
-  // -------------------------------------------------------------------
+  // keep ref of recording
   useEffect(() => {
     isRecordingRef.current = recording;
   }, [recording]);
 
-  useEffect(() => {
-    if (!searchQuery.trim()) {
-      setFilteredSegments([]);
-      return;
-    }
-    const lower = searchQuery.toLowerCase();
-    setFilteredSegments(
-      segments.filter(s => s.transcription.toLowerCase().includes(lower)),
-    );
-  }, [searchQuery, segments]);
-
   // -------------------------------------------------------------------
-  //  Recording flow for chunks
+  //  Recording flow for chunking
   // -------------------------------------------------------------------
   const startContinuousRecording = async () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -114,22 +96,21 @@ export default function MainPage() {
     intervalRef.current = setInterval(async () => {
       if (!isRecordingRef.current) return;
 
-      const previousRecorder = recorderRef.current;
-      const previousStart = chunkStartRef.current;
+      const prevRecorder = recorderRef.current;
+      const prevStart = chunkStartRef.current;
 
       recorderRef.current = await startRecordingChunk();
       chunkStartRef.current = Date.now();
 
-      if (previousRecorder && previousStart !== null) {
-        await finalizeChunk(previousRecorder, previousStart);
+      if (prevRecorder && prevStart !== null) {
+        await finalizeChunk(prevRecorder, prevStart);
       }
     }, CHUNK_INTERVAL_MS);
   };
 
-
-  // --------------------------------------------------------------------
-  //  Stop recording and process the last chunk
-  // --------------------------------------------------------------------
+  // -------------------------------------------------------------------
+  //  Stop recording and finalize the last chunk
+  // -------------------------------------------------------------------
   const stopContinuousRecording = async () => {
     setRecording(false);
 
@@ -158,15 +139,6 @@ export default function MainPage() {
       behavior={RNPlatform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.container}>
-        {/* Search bar */}
-        <TextInput
-          style={styles.searchBar}
-          placeholder="Search conversations..."
-          placeholderTextColor={Colors.light.text}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-        />
-
         {/* Record button */}
         <View style={styles.centerContent}>
           <TouchableOpacity
@@ -203,61 +175,17 @@ export default function MainPage() {
             </View>
           ))}
         </View>
-
-        {/* Search results */}
-        {filteredSegments.length > 0 && (
-          <FlatList
-            data={filteredSegments}
-            keyExtractor={item => item.id}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                onPress={() =>
-                  router.push({
-                    pathname: '/ConversationDetail',
-                    params: {
-                      transcription: item.transcription,
-                      audioUri: item.audioUri,
-                      audioBase64: item.audioBase64 ?? '',
-                      timestampStart: item.timestampStart?.toString(),
-                      timestampEnd: item.timestampEnd?.toString(),
-                      durationMillis: item.durationMillis?.toString(),
-                      wordsJson: JSON.stringify((item as any).words || []),
-                    },
-                  })
-                }
-              >
-                <View style={styles.segmentItem}>
-                  <Text style={styles.segmentTime}>
-                    {new Date(item.timestampEnd).toLocaleTimeString()}
-                  </Text>
-                  <Text style={styles.segmentPreview}>
-                    {item.transcription.slice(0, 50)}...
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            )}
-          />
-        )}
       </View>
     </KeyboardAvoidingView>
   );
 }
 
 // ---------------------------------------------------------------------
-//  Styles
+//  Styles (unchanged except searchBar removed)
 // ---------------------------------------------------------------------
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { flex: 1, padding: 20, backgroundColor: Colors.light.background },
-  searchBar: {
-    height: 50,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 20,
-    fontSize: 16,
-    marginBottom: 15,
-    backgroundColor: '#fff',
-  },
   centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   recordButton: {
     backgroundColor: Colors.light.tint,
@@ -287,18 +215,5 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     textAlign: 'center',
     fontSize: 16,
-  },
-  segmentItem: {
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ccc',
-  },
-  segmentTime: {
-    fontSize: 12,
-    color: '#666',
-  },
-  segmentPreview: {
-    fontSize: 16,
-    fontWeight: 'bold',
   },
 });
