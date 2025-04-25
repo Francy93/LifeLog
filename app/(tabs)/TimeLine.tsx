@@ -1,4 +1,4 @@
-// app/(tabs)/TimeLine.tsx — Fixed platform‑specific date pickers
+// app/(tabs)/TimeLine.tsx
 import React, { useState, useCallback } from 'react';
 import {
   View,
@@ -42,7 +42,8 @@ export default function Timeline() {
   const router = useRouter();
 
   // ------------------------------------------------------------------
-  // Load
+  // Load segments from AsyncStorage on mount
+  // and set up listener for updates
   // ------------------------------------------------------------------
   const loadSegments = async () => {
     try {
@@ -79,7 +80,7 @@ export default function Timeline() {
   displayed.sort((a, b) => (sortAsc ? a.timestampEnd - b.timestampEnd : b.timestampEnd - a.timestampEnd));
 
   // ------------------------------------------------------------------
-  // Delete flow (unchanged)
+  // Delete flow
   // ------------------------------------------------------------------
   const confirmDeleteSegment = (s: Segment) => {
     setPendingDelete(s);
@@ -109,7 +110,7 @@ export default function Timeline() {
   };
 
   // ------------------------------------------------------------------
-  // Row renderer
+  // Row renderer for the FlatList
   // ------------------------------------------------------------------
   const Row = ({ item }: { item: Segment }) => (
     <View style={styles.item}>
@@ -126,7 +127,7 @@ export default function Timeline() {
   );
 
   // ------------------------------------------------------------------
-  // JSX
+  // JSX rendering and layout
   // ------------------------------------------------------------------
   return (
     <View style={styles.container}>
@@ -201,7 +202,31 @@ export default function Timeline() {
 
       {/* Delete modal (unchanged) */}
       <Modal transparent animationType="fade" visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
-        {/* ... modal content as before ... */}
+        <View style={styles.modalOverlay}>
+        <View style={styles.modalContainer}>
+          <Text style={styles.modalTitle}>Confirm deletion</Text>
+          <Text style={styles.modalMessage}>Do you want to delete this segment?</Text>
+
+          <View style={styles.modalButtons}>
+            <TouchableOpacity
+              onPress={() => {
+                setModalVisible(false);
+                setPendingDelete(null);
+              }}
+              style={[styles.modalButton, styles.cancelButton]}
+            >
+              <Text style={styles.modalButtonText}>Cancel</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={performDelete}
+              style={[styles.modalButton, styles.confirmButton]}
+            >
+              <Text style={styles.modalButtonText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
       </Modal>
     </View>
   );
