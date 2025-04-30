@@ -10,7 +10,7 @@ export interface Segment {
   transcription: string;
   audioUri: string;
   audioBase64: string;
-  // ✅ Optional word-level metadata for highlighting
+  favorite: boolean;
   words?: { word: string; startTime: number; endTime: number }[];
 }
 

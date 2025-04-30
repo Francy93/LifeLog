@@ -149,6 +149,7 @@ export const processAndSaveSegment = async (
     transcription: transcription.text,
     audioUri,
     audioBase64: base64,
+    favorite: false,
     words: transcription.words ?? [],
   };
 

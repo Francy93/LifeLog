@@ -10,7 +10,7 @@ import {
   StyleSheet,
   GestureResponderEvent,
 } from 'react-native';
-import { Audio } from 'expo-av';
+import { Audio, AVPlaybackStatus } from 'expo-av';
 import * as Sharing from 'expo-sharing';
 import { MaterialIcons, Ionicons } from '@expo/vector-icons';
 
@@ -34,6 +34,7 @@ const AudioPlayer = forwardRef(function AudioPlayer({
   onPrevious
 }: AudioPlayerProps, ref) {
   const [isPlaying, setIsPlaying] = useState(false);
+  const [autoplay, setAutoplay] = useState(false);
   const [positionMillis, setPositionMillis] = useState(0);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [waveformPeaks, setWaveformPeaks] = useState<number[]>([]);
@@ -78,6 +79,9 @@ const AudioPlayer = forwardRef(function AudioPlayer({
         setWaveformPeaks(fallback);
       }
       await loadSound();
+      if (autoplayRef.current) {        // play only when autoplay already ON
+        await playAudio();              // (doesn’t run on mere toggle)
+      }
     })();
     return () => {
       soundRef.current?.unloadAsync();
@@ -93,13 +97,21 @@ const AudioPlayer = forwardRef(function AudioPlayer({
     },
   }));
 
-  const updateStatus = (status: any) => {
-    if (status.isLoaded) {
-      setPositionMillis(status.positionMillis);
-      setIsPlaying(status.isPlaying);
-      if (status.didJustFinish && !status.isLooping && onNext) {
-        onNext();
-      }
+  // 1. keep latest flag
+  const autoplayRef = useRef(autoplay);
+    useEffect(() => {
+      autoplayRef.current = autoplay;
+  }, [autoplay]);
+
+  // 2. use ref inside the listener (so it always sees the latest value)
+  const updateStatus = (status: AVPlaybackStatus) => {
+    if (!status.isLoaded) return;
+
+    setPositionMillis(status.positionMillis);
+    setIsPlaying(status.isPlaying);
+
+    if (status.didJustFinish && !status.isLooping && onNext && autoplayRef.current) {
+      onNext();              // parent swaps audioUri; load-effect will auto-play
     }
   };
 
@@ -119,6 +131,7 @@ const AudioPlayer = forwardRef(function AudioPlayer({
         updateStatus
       );
       soundRef.current = newSound;
+      await newSound.setRateAsync(playbackSpeed, true);
       setIsReady(true);
     } catch (error) {
       Alert.alert('Errore nel caricamento audio', String(error));
@@ -261,6 +274,16 @@ const AudioPlayer = forwardRef(function AudioPlayer({
 
       <View style={styles.controlsContainer}>
         <View style={styles.controlsRow}>
+          <TouchableOpacity
+            style={[styles.autoplayButton, autoplay && styles.autoplayButtonActive]}
+            onPress={() => setAutoplay((prev) => !prev)}
+          >
+            <Ionicons
+              name={autoplay ? "infinite" : "infinite-outline"}
+              size={28}
+              color={autoplay ? "blue" : "grey"}
+            />
+          </TouchableOpacity>
           <TouchableOpacity style={styles.navButton} onPress={onPrevious}>
             <Ionicons name="play-skip-back" size={20} color="white" />
           </TouchableOpacity>
@@ -300,6 +323,22 @@ const styles = StyleSheet.create({
   controlsContainer: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%', paddingHorizontal: 20, marginTop: 10, position: 'relative',
   },
+  autoplayButton: {
+    padding: 6,
+    borderRadius: 50,
+    width: 50,
+    height: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+    position: 'absolute', 
+    left: 10,
+},
+autoplayButtonActive: {
+  backgroundColor: 'none',
+},
+
+  
   controlsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flex: 1 },
   navButton: {
     backgroundColor: '#999', padding: 12, borderRadius: 50, width: 50, height: 50, alignItems: 'center', justifyContent: 'center',

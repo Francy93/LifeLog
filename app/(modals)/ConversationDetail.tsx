@@ -3,7 +3,7 @@
 // Conversation Detail Screen
 // Displays a scrollable transcript with an audio player.
 // Provides smooth navigation between segments (buttons + per-row play icon)
-// and keeps the current segment 100 px below the top to preview previous lines.
+// and keeps the current segment 100 px below the top to preview previous lines.
 // -----------------------------------------------------------------------------
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import {
@@ -51,7 +51,7 @@ interface Word {
   endTime: number;
 }
 
-// Helper – quick rough text height estimate (10 words ≈ one 22 px line)
+// Helper – quick rough text height estimate (10 words ≈ one 22 px line)
 const estimateHeight = (t: string) =>
   Math.ceil(t.split(/\s+/).length / 10) * 22;
 
@@ -71,19 +71,17 @@ export default function ConversationDetail() {
   const [segmentAudioUri, setSegmentAudioUri] = useState("");
   const [segmentAudioBase64, setSegmentAudioBase64] = useState("");
   const [currentTime, setCurrentTime] = useState(0); // progress for highlight
-
   // sliding window of segments displayed
   const [segmentGroup, setSegmentGroup] = useState<
     (Segment & { words?: Word[] })[]
   >([]);
   const [range, setRange] = useState({ start: 0, end: 0 });
-
   // flags
   const [scrollPending, setScrollPending] = useState(true); // auto-scroll in flight
   const [styleReady, setStyleReady] = useState(true); // show active style?
 
   // ------------------------------ refs --------------------------------------
-  const hasScrolledRef = useRef(false); // prevents prepend on first mount
+  const hasScrolledRef = useRef(false);
   const listRef = useRef<FlatList<any>>(null);
   const segmentRefs = useRef<(View | null)[]>([]);
 
@@ -92,12 +90,17 @@ export default function ConversationDetail() {
     useSegmentContext();
   const currentIndex = getSegmentIndexByTimestamp(activeTimestamp);
 
+  // Compute the active segment object
+  const currentSegment = segmentGroup.find(
+    (s) => s.timestampStart === activeTimestamp
+  );
+
   // -------------------------------------------------------------------------
   // UTIL – centralised selection logic (nav buttons + play icons)
   // -------------------------------------------------------------------------
   const selectSegment = (timestamp: number) => {
-    setCurrentTime(0); // reset highlight
-    setStyleReady(false); // keep grey until scroll finishes
+    setCurrentTime(0);
+    setStyleReady(false);
     setActiveTimestamp(timestamp);
     setScrollPending(true);
   };
@@ -122,8 +125,8 @@ export default function ConversationDetail() {
     const selected = window.find((s) => s.timestampStart === activeTimestamp);
     if (selected) {
       setActiveSegment(selected);
-      setSegmentAudioUri(selected.audioUri || "");
-      setSegmentAudioBase64(selected.audioBase64 || "");
+      setSegmentAudioUri(selected.audioUri);
+      setSegmentAudioBase64(selected.audioBase64);
     }
   }, [activeTimestamp]);
 
@@ -160,8 +163,9 @@ export default function ConversationDetail() {
   // -------------------------------------------------------------------------
   const navigateSegment = (delta: number) => {
     const idx = currentIndex + delta;
-    if (idx >= 0 && idx < segments.length)
+    if (idx >= 0 && idx < segments.length) {
       selectSegment(segments[idx].timestampStart);
+    }
   };
 
   // -------------------------------------------------------------------------
@@ -173,7 +177,6 @@ export default function ConversationDetail() {
       const currentRow = segmentGroup.findIndex(
         (s) => s.timestampStart === activeTimestamp
       );
-
       // preview offset only on web as CSS prop
       const containerStyle: ViewStyle =
         Platform.OS === "web" && index === currentRow
@@ -185,7 +188,7 @@ export default function ConversationDetail() {
         ? styleReady
           ? styles.currentActive
           : styles.currentInactive
-        : null;
+        : undefined;
 
       return (
         <View
@@ -193,24 +196,28 @@ export default function ConversationDetail() {
           style={[styles.segmentRow, containerStyle]}
         >
           {/* text block */}
-          {isCurrent ? (
+          {isCurrent && item.words && item.words.length > 0 ? (
             <Text style={[baseStyle, stateStyle] as StyleProp<TextStyle>}>
-              {(item.words || []).map((w, i) => {
-                const done = styleReady && currentTime >= w.endTime;
-                return (
-                  <Text
-                    key={i}
-                    style={{
-                      color: done ? "blue" : styleReady ? "#000" : "#999",
-                    }}
-                  >
-                    {w.word + " "}
-                  </Text>
-                );
-              })}
+              {item.words.map((w, i) => (
+                <Text
+                  key={i}
+                  style={{
+                    color:
+                      styleReady && currentTime >= w.endTime
+                        ? "blue"
+                        : styleReady
+                        ? "#000"
+                        : "#999",
+                  }}
+                >
+                  {w.word + " "}
+                </Text>
+              ))}
             </Text>
           ) : (
-            <Text style={[baseStyle] as StyleProp<TextStyle>}>
+            <Text
+              style={[baseStyle, isCurrent ? stateStyle : undefined] as StyleProp<TextStyle>}
+            >
               {item.transcription}
             </Text>
           )}
@@ -236,7 +243,7 @@ export default function ConversationDetail() {
   );
 
   // -------------------------------------------------------------------------
-  // Auto‑scroll to current segment (both web & native)
+  // Auto-scroll to current segment
   // -------------------------------------------------------------------------
   const currentRowIndex = segmentGroup.findIndex(
     (s) => s.timestampStart === activeTimestamp
@@ -244,7 +251,6 @@ export default function ConversationDetail() {
 
   useEffect(() => {
     if (!scrollPending || currentRowIndex < 0) return;
-
     // delay until FlatList renders
     setTimeout(() => {
       const target = segmentRefs.current[currentRowIndex];
@@ -253,25 +259,26 @@ export default function ConversationDetail() {
       if (!target || !container) return;
 
       if (Platform.OS === "web") {
-        (target as any).scrollIntoView({ behavior: "smooth", block: "start" });
-      } else if (
-        "measureLayout" in target &&
-        typeof container.getScrollResponder === "function"
-      ) {
+        (target as any).scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      } else {
         target.measureLayout(
           container.getScrollResponder(),
-          (_x: number, y: number) =>
+          (_x, y) =>
             container.scrollToOffset({
               offset: Math.max(y - PREVIEW_OFFSET, 0),
               animated: true,
             }),
-          () => console.error("measureLayout error")
+          () => {}
         );
       }
-
       // after scroll finishes, enable highlight & re‑allow scroll listener
       setTimeout(() => {
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        LayoutAnimation.configureNext(
+          LayoutAnimation.Presets.easeInEaseOut
+        );
         setCurrentTime(0);
         setStyleReady(true);
         setScrollPending(false);
@@ -284,7 +291,9 @@ export default function ConversationDetail() {
   // Playback progress – ignore updates during auto‑scroll
   // -------------------------------------------------------------------------
   const handlePlaybackUpdate = useCallback(
-    (t: number) => !scrollPending && setCurrentTime(t),
+    (t: number) => {
+      if (!scrollPending) setCurrentTime(t);
+    },
     [scrollPending]
   );
 
@@ -295,7 +304,6 @@ export default function ConversationDetail() {
     <View style={styles.container}>
       {currentRowIndex >= 0 && (
         <>
-          {/* transcript list */}
           <View style={styles.fadeContainer}>
             <LinearGradient
               colors={["#fff", "transparent"]}
@@ -317,12 +325,11 @@ export default function ConversationDetail() {
             />
           </View>
 
-          {/* audio player */}
           <AudioPlayer
             audioUri={segmentAudioUri}
             audioBase64={segmentAudioBase64}
             timestampStart={activeTimestamp}
-            duration={Number(durationMillis)}
+            duration={currentSegment?.durationMillis ?? Number(durationMillis)}
             onPlaybackUpdate={handlePlaybackUpdate}
             onNext={() => navigateSegment(1)}
             onPrevious={() => navigateSegment(-1)}
@@ -337,15 +344,13 @@ export default function ConversationDetail() {
 // Styles
 // -----------------------------------------------------------------------------
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: "#fff" 
+  container: {
+    flex: 1,
+    backgroundColor: "#fff",
   },
-
-  // transcript list wrapper
-  fadeContainer: { 
-    flex: 3, 
-    position: "relative" 
+  fadeContainer: {
+    flex: 3,
+    position: "relative",
   },
   transcriptionContainer: {
     paddingHorizontal: 20,
@@ -366,32 +371,36 @@ const styles = StyleSheet.create({
     width: "100%",
     zIndex: 2,
   },
-
-  // individual segment row
-  segmentRow: { marginBottom: 20 },
-  currentActive: { color: "#000" },
-  currentInactive: { color: "#999" },
-  currentBase: { 
-    fontSize: 18, 
-    lineHeight: 24, 
-    flexWrap: "wrap" 
+  segmentRow: {
+    marginBottom: 20,
   },
-  faded: { 
-    fontSize: 16, 
-    lineHeight: 22, 
-    color: "#999" 
+  currentBase: {
+    fontSize: 18,
+    lineHeight: 24,
+    flexWrap: "wrap",
   },
-
-  // timestamp / play
+  faded: {
+    fontSize: 16,
+    lineHeight: 22,
+    color: "#999",
+  },
+  currentActive: {
+    color: "#000",
+  },
+  currentInactive: {
+    color: "#999",
+  },
   timestampRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "flex-end",
     marginTop: 4,
   },
-  timestamp: { 
-    fontSize: 12, 
-    color: "#aaa" 
+  timestamp: {
+    fontSize: 12,
+    color: "#aaa",
   },
-  playIcon: { marginRight: 4 },
+  playIcon: {
+    marginRight: 4,
+  },
 });
